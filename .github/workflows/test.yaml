@@ -36,7 +36,7 @@ jobs:
       run: |
         wget ${{ inputs.zip_url }} -O ${{ inputs.zip_file }}
         unzip ${{ inputs.zip_file }}
-        EXTRACTED_DIR=$(unzip -l ${{ inputs.zip_file }} | head -4 | tail -1 | awk '{print $4}' | sed 's|/.*||')
+        EXTRACTED_DIR=$(ls -d */ | head -1 | tr -d '/')
         echo "EXTRACTED_DIR=$EXTRACTED_DIR" >> $GITHUB_ENV
 
     - name: Set Locale
