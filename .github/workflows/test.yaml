@@ -88,4 +88,4 @@ jobs:
           echo "Workflow Run URL: $WORKFLOW_RUN_URL"
           
           # Pass the run URL to your Python script
-          python test/test.py --data-url "$DATA_URL" --run-url "$WORKFLOW_RUN_URL"
+          python test/test.py --data-url "$DATA_URL"
