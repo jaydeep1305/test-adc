@@ -17,6 +17,38 @@ on:
         type: string
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+
+    - name: Set Locale
+      run: |
+        sudo apt-get install tzdata locales -y && sudo locale-gen en_US.UTF-8
+        sudo localectl set-locale LANG="en_US.UTF-8"
+        export LANG="en_US.UTF-8"
+        sudo update-locale
+        locale -a
+        locale
+        locale -c -k LC_NUMERIC
+        localectl status
+
+    - name: Install Chrome
+      run: |
+        sudo apt-get update
+        sudo apt install -y google-chrome-stable
+
+    - name: Install chromedriver
+      run: |
+        seleniumbase install chromedriver
+
   test-batch:
     runs-on: ubuntu-latest
     strategy:
