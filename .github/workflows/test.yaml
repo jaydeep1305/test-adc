@@ -73,7 +73,21 @@ jobs:
         batch: [0, 1, 2, 3, 4]
 
     steps:
-    
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.13'
+
+    - name: Download Zip File
+      run: |
+        wget ${{ inputs.zip_url }} -O ${{ inputs.zip_file }}
+        unzip ${{ inputs.zip_file }}
+        EXTRACTED_DIR=$(ls -d */ | head -1 | tr -d '/')
+        echo "EXTRACTED_DIR=$EXTRACTED_DIR" >> $GITHUB_ENV
+
     - name: Extract Domain Batch and Run Test
       run: |
         # Convert comma-separated string to array
