@@ -91,14 +91,14 @@ jobs:
         pip install --upgrade pyautogui
         pip install --upgrade python-xlib
 
-    - name: Install Chrome
-      run: |
-        sudo apt-get update
-        sudo apt install -y google-chrome-stable
+    # - name: Install Chrome
+    #   run: |
+    #     sudo apt-get update
+    #     sudo apt install -y google-chrome-stable
 
-    - name: Install chromedriver
-      run: |
-        seleniumbase install chromedriver
+    # - name: Install chromedriver
+    #   run: |
+    #     seleniumbase install chromedriver
 
     - name: Extract Domain Batch and Run Test
       run: |
