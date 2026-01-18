@@ -11,10 +11,6 @@ on:
         description: 'URL of zip file to download'
         required: true
         type: string
-      zip_file:
-        description: 'Name for downloaded zip file'
-        required: true
-        type: string
 
 jobs:
   test:
@@ -31,10 +27,27 @@ jobs:
 
     - name: Download Zip File
       run: |
-        wget ${{ inputs.zip_url }} -O ${{ inputs.zip_file }}
-        unzip ${{ inputs.zip_file }}
-        EXTRACTED_DIR=$(ls -d */ | head -1 | tr -d '/')
-        echo "EXTRACTED_DIR=$EXTRACTED_DIR" >> $GITHUB_ENV
+        REPO_URL="${{ inputs.zip_url }}"
+
+        # Extract repo name and branch from URL dynamically
+        REPO_PATH=$(echo "$REPO_URL" | sed 's|https://github.com/||' | sed 's|/archive/refs/heads/.*||')
+        REPO_NAME=$(basename "$REPO_PATH")
+        BRANCH=$(echo "$REPO_URL" | sed 's|.*/archive/refs/heads/||' | sed 's|\.zip||')
+        EXTRACTED_DIR="${REPO_NAME}-${BRANCH}"
+
+        echo "Extracting $REPO_NAME ($BRANCH branch) to test..."
+
+        mkdir -p "test" && cd "test" && \
+        wget "$REPO_URL" -O temp.zip && \
+        unzip temp.zip && \
+        if [ -d "$EXTRACTED_DIR" ]; then
+            mv "$EXTRACTED_DIR"/* . 2>/dev/null || true
+            mv "$EXTRACTED_DIR"/.* . 2>/dev/null || true
+            rm -rf "$EXTRACTED_DIR"
+        fi && \
+        rm -f temp.zip && \
+        echo "Extracted to test"
+        cd ..
 
     - name: Set Locale
       run: |
@@ -52,7 +65,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install --upgrade pip
         pip install --upgrade wheel
-        pip install -r $EXTRACTED_DIR/requirements.txt
+        pip install -r test/requirements.txt
         pip install --upgrade pyautogui
         pip install --upgrade python-xlib
 
@@ -83,10 +96,9 @@ jobs:
 
     - name: Download Zip File
       run: |
-        wget ${{ inputs.zip_url }} -O ${{ inputs.zip_file }}
-        unzip ${{ inputs.zip_file }}
-        EXTRACTED_DIR=$(ls -d */ | head -1 | tr -d '/')
-        echo "EXTRACTED_DIR=$EXTRACTED_DIR" >> $GITHUB_ENV
+        wget ${{ inputs.zip_url }} -O test.zip
+        unzip test.zip
+        mv $(ls -d */ | head -1 | tr -d '/') test
 
     - name: Extract Domain Batch and Run Test
       run: |
@@ -109,4 +121,4 @@ jobs:
 
         echo "Processing batch ${{ matrix.batch }}: domains $START_INDEX-$END_INDEX"
         echo "Batch data: $BATCH_DATA"
-        python $EXTRACTED_DIR/test.py --data "$BATCH_DATA" >> $GITHUB_ENV
+        python test/test.py --data "$BATCH_DATA"
