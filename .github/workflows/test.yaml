@@ -3,8 +3,8 @@ name: Test
 on:
   workflow_dispatch:
     inputs:
-      data:
-        description: ''
+      data_urls:
+        description: 'Comma-separated Wasabi file URLs'
         required: true
         type: string
       zip_url:
@@ -13,12 +13,39 @@ on:
         type: string
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+    - name: Calculate matrix based on input URLs
+      id: set-matrix
+      run: |
+        # Count URLs in comma-separated input
+        IFS=',' read -ra URLS <<< "${{ inputs.data_urls }}"
+        COUNT=${#URLS[@]}
+        
+        # Generate array [0, 1, 2, ..., COUNT-1]
+        MATRIX="["
+        for ((i=0; i<COUNT; i++)); do
+          if [ $i -gt 0 ]; then
+            MATRIX+=","
+          fi
+          MATRIX+="$i"
+        done
+        MATRIX+="]"
+        
+        echo "Total URLs: $COUNT"
+        echo "Matrix: $MATRIX"
+        echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
   test-batch:
     runs-on: ubuntu-latest
+    needs: setup
     timeout-minutes: 30
     strategy:
       matrix:
-        batch: [0]
+        batch: ${{ fromJson(needs.setup.outputs.matrix) }}
 
     steps:
     - name: Checkout code
@@ -45,25 +72,12 @@ jobs:
         pip install -r test/requirements.txt
         pip install --upgrade pyautogui python-xlib
 
-    - name: Extract Domain Batch and Run Test
+    - name: Run Test
       run: |
-        # Convert comma-separated string to array
-        IFS=',' read -ra DOMAINS <<< "${{ inputs.data }}"
-
-        # Calculate batch indices (10 domains per batch)
-        BATCH_SIZE=10
-        START_INDEX=$(( ${{ matrix.batch }} * BATCH_SIZE ))
-        END_INDEX=$(( START_INDEX + BATCH_SIZE - 1 ))
-
-        # Extract this batch's domains
-        BATCH_DOMAINS=()
-        for ((i=START_INDEX; i<=END_INDEX && i<${#DOMAINS[@]}; i++)); do
-          BATCH_DOMAINS+=("${DOMAINS[i]}")
-        done
-
-        # Join back to comma-separated string
-        BATCH_DATA=$(IFS=','; echo "${BATCH_DOMAINS[*]}")
-
-        echo "Processing batch ${{ matrix.batch }}: domains $START_INDEX-$END_INDEX"
-        echo "Batch data: $BATCH_DATA"
-        python test/test.py --data "$BATCH_DATA"
+        # Get the URL for this batch
+        IFS=',' read -ra URLS <<< "${{ inputs.data_urls }}"
+        DATA_URL="${URLS[${{ matrix.batch }}]}"
+        
+        echo "Processing batch ${{ matrix.batch }}"
+        echo "Data URL: $DATA_URL"
+        python test/test.py --data-url "$DATA_URL"
