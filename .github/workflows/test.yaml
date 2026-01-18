@@ -68,7 +68,7 @@ jobs:
       run: |
         seleniumbase install chromedriver
 
-    - name: Extract Domain Batch
+    - name: Extract Domain Batch and Run Test
       run: |
         # Convert comma-separated string to array
         IFS=',' read -ra DOMAINS <<< "${{ inputs.data }}"
@@ -89,7 +89,4 @@ jobs:
 
         echo "Processing batch ${{ matrix.batch }}: domains $START_INDEX-$END_INDEX"
         echo "Batch data: $BATCH_DATA"
-
-    - name: Run Test
-      run: |
-        python $EXTRACTED_DIR/test.py --data "$BATCH_DATA"
+        python $EXTRACTED_DIR/test.py --data "$BATCH_DATA" >> $GITHUB_ENV
