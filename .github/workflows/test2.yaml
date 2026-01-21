@@ -56,19 +56,26 @@ jobs:
             xfce4-terminal \
             firefox \
             dbus-x11 \
+            dbus-user-session \
             x11-utils \
+            x11-apps \
+            x11-common \
+            x11-session-utils \
+            x11-xserver-utils \
             xfonts-base \
             xfonts-100dpi \
             xfonts-75dpi \
-            xfonts-cyrillic
+            xfonts-cyrillic \
+            xubuntu-icon-theme \
+            xubuntu-wallpapers \
+            gnome-icon-theme
 
-      - name: Install VNC Server
+      - name: Install TurboVNC Server
         run: |
-          echo "Installing TigerVNC server..."
-          sudo apt-get install -y \
-            tigervnc-standalone-server \
-            tigervnc-common \
-            tigervnc-tools
+          echo "Installing TurboVNC server..."
+          wget -q https://phoenixnap.dl.sourceforge.net/project/turbovnc/2.2.5/turbovnc_2.2.5_amd64.deb
+          sudo dpkg -i turbovnc_2.2.5_amd64.deb
+          rm turbovnc_2.2.5_amd64.deb
 
       - name: Install noVNC (Web VNC)
         run: |
@@ -80,56 +87,36 @@ jobs:
 
       - name: Configure VNC Server
         run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
           mkdir -p ~/.vnc
           
+          # Create password file
           echo "${{ steps.vnc_pass.outputs.vnc_password }}" | vncpasswd -f > ~/.vnc/passwd
           chmod 600 ~/.vnc/passwd
           
-          cat > ~/.vnc/xstartup << 'EOF'
-          #!/bin/sh
-          
-          # Unset session manager
-          unset SESSION_MANAGER
-          unset DBUS_SESSION_BUS_ADDRESS
-          
-          # Set XFCE environment
-          export XKL_XMODMAP_DISABLE=1
-          export XDG_CURRENT_DESKTOP="XFCE"
-          export XDG_SESSION_DESKTOP="xfce"
-          
-          # Start dbus
-          if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-            eval $(dbus-launch --sh-syntax --exit-with-session)
-          fi
-          
-          # Start xfce4 session
-          startxfce4 &
-          
-          # Keep the script running
-          while true; do
-            sleep 60
-          done
+          # Create xstartup script (TurboVNC uses .turbovnc extension)
+          cat > ~/.vnc/xstartup.turbovnc << 'EOF'
+          #!/bin/bash
+          dbus-launch /usr/bin/startxfce4 &
           EOF
           
-          chmod +x ~/.vnc/xstartup
-          
-          cat > ~/.vnc/config << EOF
-          geometry=1920x1080
-          depth=24
-          dpi=96
-          localhost=no
-          alwaysshared
-          EOF
+          chmod +x ~/.vnc/xstartup.turbovnc
 
       - name: Start VNC Server
         run: |
-          echo "Starting VNC server on display :1..."
-          vncserver :1 -localhost no 2>&1 | tee /tmp/vnc-start.log
+          export PATH=$PATH:/opt/TurboVNC/bin
+          echo "Starting TurboVNC server on display :1..."
+          
+          # Start VNC with TurboVNC (geometry 1920x1080, depth 24, port 5901)
+          vncserver :1 -geometry 1920x1080 -depth 24 -rfbport $VNC_PORT 2>&1 | tee /tmp/vnc-start.log
           sleep 8
           
           # Check if VNC process is running
-          if pgrep -x "Xvnc" > /dev/null; then
-            echo "✅ VNC Server started successfully on port $VNC_PORT"
+          if pgrep -f "Xvnc.*:1" > /dev/null; then
+            echo "✅ TurboVNC Server started successfully on port $VNC_PORT"
+            echo ""
+            echo "VNC process info:"
+            ps aux | grep Xvnc | grep -v grep
           else
             echo "❌ Failed to start VNC server"
             echo ""
@@ -143,9 +130,6 @@ jobs:
             fi
             exit 1
           fi
-          
-          echo "VNC process info:"
-          ps aux | grep Xvnc | grep -v grep
 
       - name: Start noVNC (Web VNC)
         run: |
@@ -331,6 +315,7 @@ jobs:
 
       - name: Keep Session Alive
         run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
           echo "Session started at: $(date)"
           echo "Will run for ${{ github.event.inputs.session_duration }} hours..."
           echo ""
@@ -344,19 +329,19 @@ jobs:
             
             echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | Access: https://${{ github.event.inputs.hostname }}/vnc.html"
             
-            # FIXED: Check and restart VNC with verification
-            if ! pgrep -x "Xvnc" > /dev/null; then
+            # Check and restart VNC with verification
+            if ! pgrep -f "Xvnc.*:1" > /dev/null; then
               echo "❌ VNC stopped! Restarting..."
-              vncserver :1 -localhost no
+              vncserver :1 -geometry 1920x1080 -depth 24 -rfbport $VNC_PORT
               sleep 3
-              if ! pgrep -x "Xvnc" > /dev/null; then
+              if ! pgrep -f "Xvnc.*:1" > /dev/null; then
                 echo "❌ Failed to restart VNC! Exiting..."
                 exit 1
               fi
               echo "✅ VNC restarted successfully"
             fi
             
-            # FIXED: Check and restart Cloudflare tunnel with verification
+            # Check and restart Cloudflare tunnel with verification
             if ! pgrep -x "cloudflared" > /dev/null; then
               echo "❌ Tunnel stopped! Restarting..."
               cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
@@ -377,6 +362,7 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
           echo "Cleaning up..."
           
           # Stop VNC server
