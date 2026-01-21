@@ -86,20 +86,29 @@ jobs:
           chmod 600 ~/.vnc/passwd
           
           cat > ~/.vnc/xstartup << 'EOF'
-          #!/bin/bash
+          #!/bin/sh
+          
+          # Unset session manager
           unset SESSION_MANAGER
           unset DBUS_SESSION_BUS_ADDRESS
+          
+          # Set XFCE environment
           export XKL_XMODMAP_DISABLE=1
           export XDG_CURRENT_DESKTOP="XFCE"
           export XDG_SESSION_DESKTOP="xfce"
           
-          # Start D-Bus if not running
+          # Start dbus
           if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-            eval $(dbus-launch --sh-syntax)
+            eval $(dbus-launch --sh-syntax --exit-with-session)
           fi
           
-          # Start XFCE session and keep it running
-          exec startxfce4
+          # Start xfce4 session
+          startxfce4 &
+          
+          # Keep the script running
+          while true; do
+            sleep 60
+          done
           EOF
           
           chmod +x ~/.vnc/xstartup
@@ -115,15 +124,28 @@ jobs:
       - name: Start VNC Server
         run: |
           echo "Starting VNC server on display :1..."
-          vncserver :1 -localhost no
-          sleep 5
+          vncserver :1 -localhost no 2>&1 | tee /tmp/vnc-start.log
+          sleep 8
           
+          # Check if VNC process is running
           if pgrep -x "Xvnc" > /dev/null; then
             echo "✅ VNC Server started successfully on port $VNC_PORT"
           else
             echo "❌ Failed to start VNC server"
+            echo ""
+            echo "VNC startup output:"
+            cat /tmp/vnc-start.log
+            echo ""
+            echo "VNC log file:"
+            LOG_FILE=$(ls -t ~/.vnc/*.log 2>/dev/null | head -1)
+            if [ -n "$LOG_FILE" ]; then
+              cat "$LOG_FILE"
+            fi
             exit 1
           fi
+          
+          echo "VNC process info:"
+          ps aux | grep Xvnc | grep -v grep
 
       - name: Start noVNC (Web VNC)
         run: |
