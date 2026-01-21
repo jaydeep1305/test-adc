@@ -1,0 +1,376 @@
+name: Ubuntu Desktop VNC + Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      cloudflare_api_token:
+        description: 'Cloudflare API Token'
+        required: true
+      cloudflare_account_id:
+        description: 'Cloudflare Account ID'
+        required: true
+      cloudflare_zone_id:
+        description: 'Cloudflare Zone ID'
+        required: true
+      hostname:
+        description: 'Your hostname (e.g., vnc.example.com)'
+        required: true
+      vnc_password:
+        description: 'VNC Password (leave blank for auto-generated)'
+        required: false
+        default: ''
+      session_duration:
+        description: 'Session duration in hours (max 6)'
+        required: false
+        default: '6'
+
+env:
+  DISPLAY: :1
+  VNC_PORT: 5901
+  NOVNC_PORT: 6080
+
+jobs:
+  vnc-desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Generate VNC Password
+        id: vnc_pass
+        run: |
+          if [ -z "${{ github.event.inputs.vnc_password }}" ]; then
+            VNC_PASS=$(openssl rand -base64 12)
+            echo "Generated password: $VNC_PASS"
+          else
+            VNC_PASS="${{ github.event.inputs.vnc_password }}"
+          fi
+          echo "vnc_password=$VNC_PASS" >> $GITHUB_OUTPUT
+
+      - name: Install Desktop Environment
+        run: |
+          echo "Installing XFCE desktop environment..."
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            xfce4-terminal \
+            firefox \
+            dbus-x11 \
+            x11-utils \
+            xfonts-base \
+            xfonts-100dpi \
+            xfonts-75dpi \
+            xfonts-cyrillic
+
+      - name: Install VNC Server
+        run: |
+          echo "Installing TigerVNC server..."
+          sudo apt-get install -y \
+            tigervnc-standalone-server \
+            tigervnc-common \
+            tigervnc-tools
+
+      - name: Install noVNC (Web VNC)
+        run: |
+          echo "Installing noVNC for web-based access..."
+          cd ~
+          git clone https://github.com/novnc/noVNC.git
+          cd noVNC
+          git clone https://github.com/novnc/websockify.git
+
+      - name: Configure VNC Server
+        run: |
+          mkdir -p ~/.vnc
+          
+          echo "${{ steps.vnc_pass.outputs.vnc_password }}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          
+          cat > ~/.vnc/xstartup << 'EOF'
+          #!/bin/bash
+          unset SESSION_MANAGER
+          unset DBUS_SESSION_BUS_ADDRESS
+          export XKL_XMODMAP_DISABLE=1
+          export XDG_CURRENT_DESKTOP="XFCE"
+          export XDG_SESSION_DESKTOP="xfce"
+          dbus-launch --exit-with-session startxfce4 &
+          EOF
+          
+          chmod +x ~/.vnc/xstartup
+          
+          cat > ~/.vnc/config << EOF
+          geometry=1920x1080
+          depth=24
+          dpi=96
+          localhost=no
+          alwaysshared
+          EOF
+
+      - name: Start VNC Server
+        run: |
+          echo "Starting VNC server on display :1..."
+          vncserver :1 -localhost no
+          sleep 5
+          
+          if pgrep -x "Xvnc" > /dev/null; then
+            echo "✅ VNC Server started successfully on port $VNC_PORT"
+          else
+            echo "❌ Failed to start VNC server"
+            exit 1
+          fi
+
+      - name: Start noVNC (Web VNC)
+        run: |
+          echo "Starting noVNC web server..."
+          cd ~/noVNC
+          ./utils/novnc_proxy --vnc localhost:$VNC_PORT --listen $NOVNC_PORT &
+          sleep 3
+          
+          if netstat -tuln | grep :$NOVNC_PORT > /dev/null; then
+            echo "✅ noVNC started successfully on port $NOVNC_PORT"
+          else
+            echo "❌ noVNC failed to start"
+            exit 1
+          fi
+
+      - name: Install cloudflared
+        run: |
+          echo "Installing cloudflared..."
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          cloudflared --version
+
+      - name: Create Cloudflare Tunnel
+        id: tunnel
+        run: |
+          echo "Creating Cloudflare Tunnel..."
+          
+          RESPONSE=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel" \
+            --request POST \
+            --header "Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "name": "github-vnc-'$(date +%s)'",
+              "config_src": "cloudflare"
+            }')
+          
+          echo "$RESPONSE" | jq '.'
+          
+          # Extract tunnel ID and token
+          TUNNEL_ID=$(echo "$RESPONSE" | jq -r '.result.id')
+          TUNNEL_TOKEN=$(echo "$RESPONSE" | jq -r '.result.token')
+          
+          # Validate tunnel creation
+          if [ -z "$TUNNEL_ID" ] || [ "$TUNNEL_ID" = "null" ]; then
+            echo "❌ Failed to create tunnel"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "tunnel_id=$TUNNEL_ID" >> $GITHUB_OUTPUT
+          echo "tunnel_token=$TUNNEL_TOKEN" >> $GITHUB_OUTPUT
+          
+          echo "✅ Tunnel created: $TUNNEL_ID"
+
+      - name: Configure Tunnel
+        run: |
+          echo "Configuring tunnel for noVNC..."
+          
+          # FIXED: Proper JSON escaping with double quotes and variable expansion
+          RESPONSE=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}/configurations" \
+            --request PUT \
+            --header "Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"config\": {
+                \"ingress\": [
+                  {
+                    \"hostname\": \"${{ github.event.inputs.hostname }}\",
+                    \"service\": \"http://localhost:${NOVNC_PORT}\",
+                    \"originRequest\": {}
+                  },
+                  {
+                    \"service\": \"http_status:404\"
+                  }
+                ]
+              }
+            }")
+          
+          echo "$RESPONSE" | jq '.'
+          
+          # Validate configuration
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to configure tunnel"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Tunnel configured"
+
+      - name: Create DNS Record
+        run: |
+          echo "Creating DNS record..."
+          
+          # FIXED: Extract subdomain from full hostname if needed
+          FULL_HOSTNAME="${{ github.event.inputs.hostname }}"
+          
+          # Check if DNS record already exists
+          EXISTING=$(curl -s "https://api.cloudflare.com/client/v4/zones/${{ github.event.inputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
+            --header "Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}" | jq -r '.result[0].id // empty')
+          
+          if [ -n "$EXISTING" ]; then
+            echo "⚠️ DNS record already exists (ID: $EXISTING), deleting..."
+            curl -s "https://api.cloudflare.com/client/v4/zones/${{ github.event.inputs.cloudflare_zone_id }}/dns_records/${EXISTING}" \
+              --request DELETE \
+              --header "Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}" | jq '.'
+          fi
+          
+          RESPONSE=$(curl -s "https://api.cloudflare.com/client/v4/zones/${{ github.event.inputs.cloudflare_zone_id }}/dns_records" \
+            --request POST \
+            --header "Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"type\": \"CNAME\",
+              \"proxied\": true,
+              \"name\": \"${FULL_HOSTNAME}\",
+              \"content\": \"${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com\"
+            }")
+          
+          echo "$RESPONSE" | jq '.'
+          
+          # Validate DNS record creation
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to create DNS record"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ DNS configured"
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          echo "Starting Cloudflare Tunnel..."
+          cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+          sleep 10
+          
+          # Verify tunnel is running
+          if ! pgrep -x "cloudflared" > /dev/null; then
+            echo "❌ Cloudflare tunnel failed to start"
+            echo "Tunnel logs:"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+          
+          echo "✅ Cloudflare Tunnel started"
+
+      - name: Display Connection Information
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          🎉 UBUNTU DESKTOP VNC IS NOW RUNNING! 🎉            ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "🌐 Access URL: https://${{ github.event.inputs.hostname }}/vnc.html"
+          echo "🔑 Password: ${{ steps.vnc_pass.outputs.vnc_password }}"
+          echo ""
+          echo "⏱️ Session will run for ${{ github.event.inputs.session_duration }} hours"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📋 Tunnel Management Commands:"
+          echo ""
+          echo "# Check tunnel status:"
+          echo "curl \"https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}\" \\"
+          echo "  --header \"Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}\" | jq '.'"
+          echo ""
+          echo "# List all tunnels:"
+          echo "curl \"https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel\" \\"
+          echo "  --header \"Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}\" | jq '.'"
+          echo ""
+          echo "# Delete this tunnel:"
+          echo "curl \"https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}\" \\"
+          echo "  --request DELETE \\"
+          echo "  --header \"Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}\" | jq '.'"
+          echo ""
+          echo "# Get tunnel token:"
+          echo "curl \"https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}/token\" \\"
+          echo "  --header \"Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}\" | jq '.'"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+
+      - name: Keep Session Alive
+        run: |
+          echo "Session started at: $(date)"
+          echo "Will run for ${{ github.event.inputs.session_duration }} hours..."
+          echo ""
+          
+          END_TIME=$((SECONDS + ${{ github.event.inputs.session_duration }} * 3600))
+          
+          while [ $SECONDS -lt $END_TIME ]; do
+            REMAINING=$((END_TIME - SECONDS))
+            HOURS=$((REMAINING / 3600))
+            MINUTES=$(((REMAINING % 3600) / 60))
+            
+            echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | Access: https://${{ github.event.inputs.hostname }}/vnc.html"
+            
+            # FIXED: Check and restart VNC with verification
+            if ! pgrep -x "Xvnc" > /dev/null; then
+              echo "❌ VNC stopped! Restarting..."
+              vncserver :1 -localhost no
+              sleep 3
+              if ! pgrep -x "Xvnc" > /dev/null; then
+                echo "❌ Failed to restart VNC! Exiting..."
+                exit 1
+              fi
+              echo "✅ VNC restarted successfully"
+            fi
+            
+            # FIXED: Check and restart Cloudflare tunnel with verification
+            if ! pgrep -x "cloudflared" > /dev/null; then
+              echo "❌ Tunnel stopped! Restarting..."
+              cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+              sleep 5
+              if ! pgrep -x "cloudflared" > /dev/null; then
+                echo "❌ Failed to restart tunnel! Exiting..."
+                cat /tmp/tunnel.log
+                exit 1
+              fi
+              echo "✅ Tunnel restarted successfully"
+            fi
+            
+            sleep 300
+          done
+          
+          echo "✅ Session time expired"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up..."
+          
+          # Stop VNC server
+          vncserver -kill :1 || true
+          
+          # Stop cloudflared
+          pkill -x cloudflared || true
+          
+          # Delete Cloudflare tunnel
+          echo "Deleting tunnel..."
+          DELETE_RESPONSE=$(curl -s "https://api.cloudflare.com/client/v4/accounts/${{ github.event.inputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
+            --request DELETE \
+            --header "Authorization: Bearer ${{ github.event.inputs.cloudflare_api_token }}")
+          
+          echo "$DELETE_RESPONSE" | jq '.'
+          
+          # Verify deletion
+          SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ Tunnel deleted successfully"
+          else
+            echo "⚠️ Tunnel deletion may have failed - please check manually"
+            echo "Response: $DELETE_RESPONSE"
+          fi
+          
+          echo "✅ Cleanup complete"
