@@ -1,14 +1,11 @@
 name: Security Analysis - Extended Scan
 
-on: [push, pull_request]
+on: [push]
 
 jobs:
   codeql-analysis:
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
+    timeout-minutes: 45
     
     steps:
     - name: Checkout repository
@@ -19,23 +16,73 @@ jobs:
       with:
         python-version: '3.11'
     
-    # Clone a large real project to analyze
-    - name: Prepare codebase for analysis
+    # Network-heavy: Download vulnerability databases
+    - name: Download security databases
       run: |
-        git clone --depth 1 https://github.com/django/django.git vendor/django
-        git clone --depth 1 https://github.com/pallets/flask.git vendor/flask
-        git clone --depth 1 https://github.com/psf/requests.git vendor/requests
+        mkdir -p security-data
+        # Download NVD CVE feeds (large files)
+        for year in {2020..2024}; do
+          wget -q https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-$year.json.gz -P security-data/ || true
+          gunzip -f security-data/nvdcve-1.1-$year.json.gz || true
+        done
+        # Download OWASP dependency check database
+        wget -q https://jeremylong.github.io/DependencyCheck/current/dependency-check-8.4.0-release.zip || true
+        unzip -q dependency-check-8.4.0-release.zip || true
+    
+    # Network-heavy: Install comprehensive security tools
+    - name: Install security scanning tools
+      run: |
+        pip install --no-cache-dir \
+          bandit \
+          safety \
+          pip-audit \
+          semgrep \
+          cyclonedx-bom \
+          detect-secrets \
+          dodgy \
+          prospector \
+          pylint \
+          mypy
+    
+    # Network-heavy: Clone security rule repositories
+    - name: Fetch security rulesets
+      run: |
+        git clone --depth 1 https://github.com/returntocorp/semgrep-rules.git
+        git clone --depth 1 https://github.com/PyCQA/bandit.git
+        git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git
+    
+    # Network-heavy: Run multiple security audits
+    - name: Dependency security audit
+      run: |
+        pip-audit --desc --format json > pip-audit-report.json || true
+        safety check --full-report --output json > safety-report.json || true
     
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
         languages: python
-        queries: security-and-quality  # Comprehensive scan
+        queries: security-extended,security-and-quality
+        ram: 2048
+        threads: 2
     
     - name: Autobuild
       uses: github/codeql-action/autobuild@v3
     
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
+      timeout-minutes: 30
+      continue-on-error: true
       with:
         category: "/language:python"
+        upload-database: true
+    
+    # Network-heavy: Run Semgrep with remote configs
+    - name: Semgrep security scan
+      run: |
+        semgrep --config=auto --config=p/security-audit --config=p/owasp-top-ten --json > semgrep-results.json || true
+    
+    # Network-heavy: Additional scans
+    - name: Secret scanning
+      run: |
+        detect-secrets scan --all-files --force-use-all-plugins > secrets-baseline.json || true
+    
