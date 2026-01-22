@@ -33,7 +33,7 @@ jobs:
     - name: Create requirements if missing
       run: |
         if [ ! -f requirements.txt ]; then
-          cat > requirements.txt << EOF
+          cat > requirements.txt << 'EOF'
         flask==2.3.0
         django==4.2.0
         requests==2.31.0
@@ -124,7 +124,7 @@ jobs:
     - name: Create requirements if missing
       run: |
         if [ ! -f requirements.txt ]; then
-          cat > requirements.txt << EOF
+          cat > requirements.txt << 'EOF'
         # Web Frameworks
         flask==3.0.0
         django==4.2.0
@@ -282,6 +282,7 @@ jobs:
         types-requests==2.31.0.10
         types-redis==4.6.0.11
         types-PyYAML==6.0.12.12
+        EOF
         fi
     
     - name: Install dependencies
@@ -540,7 +541,7 @@ jobs:
     - name: Create docker-compose if missing
       run: |
         if [ ! -f docker-compose.yml ]; then
-          cat > docker-compose.yml << EOF
+          cat > docker-compose.yml << 'EOF'
         version: '3.8'
         services:
           web:
@@ -599,4 +600,3 @@ jobs:
         args: --severity-threshold=high --json-file-output=snyk-iac-compose-high.json
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-    
