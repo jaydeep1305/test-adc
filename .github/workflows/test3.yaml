@@ -2,7 +2,7 @@ name: Production Security Pipeline
 
 on: 
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
   schedule:
     - cron: '0 2 * * 1'  # Weekly Monday 2 AM
@@ -26,7 +26,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Full history for better analysis
+        fetch-depth: 0
       
     - name: Setup Python
       uses: actions/setup-python@v4
@@ -34,7 +34,6 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
     
-    # Install dependencies for analysis
     - name: Install dependencies
       run: |
         if [ -f requirements.txt ]; then
@@ -43,17 +42,14 @@ jobs:
         if [ -f requirements-dev.txt ]; then
           pip install -r requirements-dev.txt
         fi
-        # Ensure we have something to analyze
         pip install flask requests sqlalchemy psycopg2-binary redis celery
     
-    # Download real vulnerability databases
     - name: Update vulnerability databases
       continue-on-error: true
       run: |
-        echo "Downloading latest CVE data for dependency analysis..."
+        echo "Downloading latest CVE data..."
         mkdir -p .security-cache
         
-        # Download recent CVE data (last 3 years is realistic)
         for year in {2022..2024}; do
           wget --timeout=90 -q \
             "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-$year.json.gz" \
@@ -61,53 +57,30 @@ jobs:
           gunzip -f .security-cache/nvdcve-1.1-$year.json.gz 2>/dev/null || true
         done
     
-    # Install real security tools
     - name: Install security tooling
       run: |
-        pip install --no-cache-dir \
-          bandit \
-          safety \
-          pip-audit \
-          semgrep
+        pip install --no-cache-dir bandit safety pip-audit semgrep
     
-    # Run actual security scans
     - name: Run Bandit SAST
       continue-on-error: true
       run: |
-        bandit -r . \
-          -f json \
-          -o bandit-report.json \
-          --exclude ./tests,./venv,./.venv,./env \
-          || true
+        bandit -r . -f json -o bandit-report.json --exclude ./tests,./venv,./.venv,./env || true
     
-    - name: Run pip-audit for dependency vulnerabilities
+    - name: Run pip-audit
       continue-on-error: true
       run: |
-        pip-audit \
-          --desc \
-          --format json \
-          --output pip-audit-report.json \
-          || true
+        pip-audit --desc --format json --output pip-audit-report.json || true
     
     - name: Run Safety check
       continue-on-error: true
       run: |
-        safety check \
-          --json \
-          --output safety-report.json \
-          || true
+        safety check --json --output safety-report.json || true
     
     - name: Run Semgrep
       continue-on-error: true
       run: |
-        semgrep \
-          --config=p/security-audit \
-          --config=p/owasp-top-ten \
-          --json \
-          --output=semgrep-results.json \
-          || true
+        semgrep --config=p/security-audit --config=p/owasp-top-ten --json --output=semgrep-results.json || true
     
-    # CodeQL for deep analysis
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
@@ -149,23 +122,21 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          # Create realistic requirements for testing
-          cat > requirements.txt << 'EOF'
-flask==2.3.0
-django==4.2.0
-requests==2.31.0
-sqlalchemy==2.0.0
-celery==5.3.0
-redis==4.6.0
-psycopg2-binary==2.9.0
-boto3==1.28.0
-pyjwt==2.8.0
-cryptography==41.0.0
-EOF
+          cat > requirements.txt << EOF
+        flask==2.3.0
+        django==4.2.0
+        requests==2.31.0
+        sqlalchemy==2.0.0
+        celery==5.3.0
+        redis==4.6.0
+        psycopg2-binary==2.9.0
+        boto3==1.28.0
+        pyjwt==2.8.0
+        cryptography==41.0.0
+        EOF
           pip install -r requirements.txt
         fi
     
-    # Snyk for comprehensive dependency scanning
     - name: Snyk Open Source Scan
       uses: snyk/actions/python@master
       continue-on-error: true
@@ -184,19 +155,12 @@ EOF
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    # OWASP Dependency Check
     - name: OWASP Dependency Check
       continue-on-error: true
       run: |
         wget -q https://github.com/jeremylong/DependencyCheck/releases/download/v8.4.0/dependency-check-8.4.0-release.zip
         unzip -q dependency-check-8.4.0-release.zip
-        
-        ./dependency-check/bin/dependency-check.sh \
-          --scan . \
-          --format JSON \
-          --out dependency-check-report.json \
-          --suppression dependency-check-suppressions.xml \
-          || true
+        ./dependency-check/bin/dependency-check.sh --scan . --format JSON --out dependency-check-report.json || true
     
     - name: Upload dependency reports
       if: always()
@@ -215,7 +179,6 @@ EOF
     steps:
     - uses: actions/checkout@v4
     
-    # Scan base images we actually use
     - name: Install Trivy
       run: |
         wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
@@ -223,50 +186,30 @@ EOF
         sudo apt-get update
         sudo apt-get install -y trivy
     
-    # Scan images that would be in a real Dockerfile
     - name: Scan Python base images
       continue-on-error: true
       run: |
-        # Scan the base images we'd actually use in production
         echo "Scanning production Python base image..."
         docker pull python:3.11-slim
-        trivy image \
-          --severity HIGH,CRITICAL \
-          --format json \
-          --output trivy-python-base.json \
-          python:3.11-slim
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-python-base.json python:3.11-slim
     
     - name: Scan database images
       continue-on-error: true
       run: |
-        # Scan database images from docker-compose.yml
         echo "Scanning PostgreSQL image..."
         docker pull postgres:15-alpine
-        trivy image \
-          --severity HIGH,CRITICAL \
-          --format json \
-          --output trivy-postgres.json \
-          postgres:15-alpine
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-postgres.json postgres:15-alpine
         
         echo "Scanning Redis image..."
         docker pull redis:7-alpine
-        trivy image \
-          --severity HIGH,CRITICAL \
-          --format json \
-          --output trivy-redis.json \
-          redis:7-alpine
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-redis.json redis:7-alpine
     
-    # Scan our own Dockerfile if it exists
     - name: Scan project Dockerfile
       continue-on-error: true
       run: |
         if [ -f Dockerfile ]; then
           docker build -t app:scan .
-          trivy image \
-            --severity HIGH,CRITICAL \
-            --format json \
-            --output trivy-app.json \
-            app:scan
+          trivy image --severity HIGH,CRITICAL --format json --output trivy-app.json app:scan
         fi
     
     - name: Upload container scan results
@@ -284,9 +227,8 @@ EOF
     steps:
     - uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Full history to scan commits
+        fetch-depth: 0
     
-    # Use GitGuardian for real secret detection
     - name: GitGuardian Scan
       uses: GitGuardian/ggshield-action@master
       continue-on-error: true
@@ -296,15 +238,11 @@ EOF
         GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
     
-    # Also use detect-secrets
     - name: detect-secrets scan
       continue-on-error: true
       run: |
         pip install detect-secrets
-        detect-secrets scan \
-          --all-files \
-          --baseline .secrets.baseline \
-          > secrets-scan-results.json || true
+        detect-secrets scan --all-files --baseline .secrets.baseline > secrets-scan-results.json || true
     
     - name: Upload secret scan results
       if: always()
@@ -317,89 +255,45 @@ EOF
   infrastructure-security:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.event_name != 'pull_request'  # Only on main branch
+    if: github.event_name != 'pull_request'
     
     steps:
     - uses: actions/checkout@v4
     
-    # Scan Infrastructure as Code files
-    - name: Scan Terraform/CloudFormation
+    - name: Scan Infrastructure as Code
       continue-on-error: true
       run: |
-        # Install checkov for IaC scanning
         pip install checkov
         
-        # Scan if we have IaC files
         if [ -d terraform ] || [ -f *.tf ]; then
-          checkov --directory . \
-            --framework terraform \
-            --output json \
-            --output-file checkov-terraform.json || true
+          checkov --directory . --framework terraform --output json --output-file checkov-terraform.json || true
         fi
         
         if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-          checkov --file docker-compose.yml \
-            --framework docker_compose \
-            --output json \
-            --output-file checkov-compose.json || true
+          checkov --file docker-compose.yml --framework docker_compose --output json --output-file checkov-compose.json || true
         fi
         
         if [ -f Dockerfile ]; then
-          checkov --file Dockerfile \
-            --framework dockerfile \
-            --output json \
-            --output-file checkov-dockerfile.json || true
+          checkov --file Dockerfile --framework dockerfile --output json --output-file checkov-dockerfile.json || true
         fi
     
-    # Check for common misconfigurations
     - name: Check for exposed credentials
       continue-on-error: true
       run: |
-        echo "Checking for common security misconfigurations..."
-        
-        # Check .env files aren't committed
-        find . -name ".env" -type f | grep -v node_modules | grep -v .venv || echo "No .env files found (good)"
-        
-        # Check for hardcoded IPs/ports
+        echo "Checking for security misconfigurations..."
+        find . -name ".env" -type f | grep -v node_modules | grep -v .venv || echo "No .env files found"
         grep -r "0.0.0.0" --include="*.py" --include="*.yml" --include="*.yaml" . || true
-        
-        # Check for DEBUG=True in production configs
         grep -r "DEBUG.*=.*True" --include="*.py" . || true
     
-    # Real-world: Check dependencies of our infrastructure
     - name: Check GitHub Actions security
       continue-on-error: true
       run: |
-        # Scan our own workflow files for security issues
-        pip install actionlint-py
-        
         find .github/workflows -name "*.yml" -o -name "*.yaml" | while read workflow; do
           echo "Analyzing $workflow"
-          # Check for pinned versions, secrets exposure, etc.
           grep -n "uses:.*@" "$workflow" | grep -v "@v" || echo "Warning: Unpinned action found"
         done
 
-  # Job 6: Network & API Security (only if we have API endpoints)
-  api-security:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    if: false  # Enable only if you have actual API endpoints to test
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    # OWASP ZAP for API testing
-    - name: OWASP ZAP API Scan
-      continue-on-error: true
-      run: |
-        docker run -v $(pwd):/zap/wrk/:rw \
-          -t owasp/zap2docker-stable \
-          zap-api-scan.py \
-          -t http://localhost:8000/api/openapi.json \
-          -f openapi \
-          -r zap-api-report.html || true
-
-  # Job 7: Compliance & License Scanning (5-7 mins)
+  # Job 6: Compliance & License Scanning (5-7 mins)
   compliance-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -412,7 +306,6 @@ EOF
       with:
         python-version: '3.11'
     
-    # Check license compliance
     - name: License compliance check
       continue-on-error: true
       run: |
@@ -420,27 +313,17 @@ EOF
         
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
-          
-          # Generate license report
-          pip-licenses \
-            --format=json \
-            --output-file=license-report.json || true
-          
-          # Check for GPL licenses (might conflict with proprietary code)
+          pip-licenses --format=json --output-file=license-report.json || true
           pip-licenses | grep -i "gpl" && echo "WARNING: GPL license found" || true
         fi
     
-    # Generate SBOM (Software Bill of Materials)
     - name: Generate SBOM
       continue-on-error: true
       run: |
         pip install cyclonedx-bom
         
         if [ -f requirements.txt ]; then
-          cyclonedx-py \
-            --input requirements.txt \
-            --output sbom.json \
-            --format json || true
+          cyclonedx-py --input requirements.txt --output sbom.json --format json || true
         fi
     
     - name: Upload compliance reports
@@ -452,7 +335,7 @@ EOF
           license-report.json
           sbom.json
 
-  # Job 8: Security Report Aggregation
+  # Job 7: Security Report Aggregation
   security-report:
     runs-on: ubuntu-latest
     needs: 
@@ -473,38 +356,37 @@ EOF
     
     - name: Generate executive summary
       run: |
-        cat > SECURITY_SUMMARY.md << 'EOF'
-# Security Scan Summary
+        cat > SECURITY_SUMMARY.md << EOF
+        # Security Scan Summary
         
-**Scan Date:** $(date)
-**Branch:** ${{ github.ref_name }}
-**Commit:** ${{ github.sha }}
-
-## Scans Completed
-
-- ✅ Static Application Security Testing (SAST)
-- ✅ Dependency Vulnerability Analysis
-- ✅ Container Security Scanning
-- ✅ Secret Detection
-- ✅ Infrastructure as Code Security
-- ✅ License Compliance
-
-## Results Location
-
-All detailed reports are available in the workflow artifacts.
-
-## Next Steps
-
-1. Review high/critical findings in each report
-2. Create tickets for remediation
-3. Update dependency versions where needed
-4. Rotate any exposed secrets immediately
-
-EOF
+        **Scan Date:** $(date)
+        **Branch:** ${{ github.ref_name }}
+        **Commit:** ${{ github.sha }}
+        
+        ## Scans Completed
+        
+        - ✅ Static Application Security Testing (SAST)
+        - ✅ Dependency Vulnerability Analysis
+        - ✅ Container Security Scanning
+        - ✅ Secret Detection
+        - ✅ Infrastructure as Code Security
+        - ✅ License Compliance
+        
+        ## Results Location
+        
+        All detailed reports are available in the workflow artifacts.
+        
+        ## Next Steps
+        
+        1. Review high/critical findings
+        2. Create remediation tickets
+        3. Update dependencies
+        4. Rotate exposed secrets
+        EOF
         
         cat SECURITY_SUMMARY.md
         
-        # List all findings
+        echo "" >> SECURITY_SUMMARY.md
         echo "## Detailed Findings" >> SECURITY_SUMMARY.md
         find security-reports -name "*.json" -type f | while read report; do
           echo "- $(basename $report)" >> SECURITY_SUMMARY.md
@@ -518,19 +400,3 @@ EOF
           SECURITY_SUMMARY.md
           security-reports/
         retention-days: 90
-    
-    - name: Comment on PR (if applicable)
-      if: github.event_name == 'pull_request'
-      continue-on-error: true
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          const summary = fs.readFileSync('SECURITY_SUMMARY.md', 'utf8');
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: summary
-          });
