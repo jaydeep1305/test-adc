@@ -106,15 +106,6 @@ jobs:
       continue-on-error: true
       with:
         category: "/language:python"
-    
-    - name: Upload SAST results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: sast-reports
-        path: |
-          *-report.json
-        retention-days: 30
 
   # Job 2: Snyk Dependency Scanning - EXTENDED (8-10 mins)
   snyk-dependency-scan:
@@ -340,12 +331,19 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Upload dependency reports
-      if: always()
-      uses: actions/upload-artifact@v4
+    # ADDED: More aggressive CodeQL settings
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
       with:
-        name: snyk-dependency-reports
-        path: snyk-deps-*.json
+        languages: python
+        queries: security-extended,security-and-quality  # Both query packs
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      timeout-minutes: 30
+      continue-on-error: true
+      with:
+        category: "/language:python"
 
   # Job 3: Snyk Code Analysis - EXTENDED (5-7 mins)
   snyk-code-scan:
@@ -397,13 +395,6 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Upload code reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: snyk-code-reports
-        path: snyk-code-*.json
-
   # Job 4: Container Security - EXTENDED (8-12 mins)
   container-security:
     runs-on: ubuntu-latest
@@ -500,15 +491,6 @@ jobs:
       run: |
         trivy image --severity HIGH,CRITICAL --format json --output trivy-nginx.json nginx:alpine || true
     
-    - name: Upload container reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: container-security-reports
-        path: |
-          snyk-container-*.json
-          trivy-*.json
-
   # Job 5: Secret Scanning (3-5 mins)
   secret-scanning:
     runs-on: ubuntu-latest
@@ -541,13 +523,6 @@ jobs:
         pip install detect-secrets
         detect-secrets scan --all-files > secrets-scan-results.json || true
     
-    - name: Upload secret scan results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: secret-scan-reports
-        path: secrets-scan-results.json
-
   # Job 6: Infrastructure as Code (5-7 mins)
   iac-security:
     runs-on: ubuntu-latest
@@ -625,70 +600,3 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Upload IaC reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: iac-security-reports
-        path: |
-          checkov-*.json
-          snyk-iac-*.json
-
-  # Job 7: Final Report
-  security-report:
-    runs-on: ubuntu-latest
-    needs:
-      - static-analysis
-      - snyk-dependency-scan
-      - snyk-code-scan
-      - container-security
-      - secret-scanning
-      - iac-security
-    if: always()
-    timeout-minutes: 5
-    
-    steps:
-    - name: Download all reports
-      uses: actions/download-artifact@v4
-      with:
-        path: security-reports/
-    
-    - name: Generate executive summary
-      run: |
-        cat > SECURITY_SUMMARY.md << EOF
-        # Security Scan Summary
-        
-        **Scan Date:** $(date)
-        **Branch:** ${{ github.ref_name }}
-        **Commit:** ${{ github.sha }}
-        
-        ## Pipeline Execution (Sequential)
-        
-        1. ✅ Static Analysis & CodeQL
-        2. ✅ Snyk Dependency Scanning
-        3. ✅ Snyk Code Analysis
-        4. ✅ Container Security (Snyk + Trivy)
-        5. ✅ Secret Detection
-        6. ✅ Infrastructure as Code Security
-        
-        ## Next Steps
-        
-        Review findings and create remediation tickets.
-        EOF
-        
-        cat SECURITY_SUMMARY.md
-        
-        echo "" >> SECURITY_SUMMARY.md
-        echo "## Report Files" >> SECURITY_SUMMARY.md
-        find security-reports -name "*.json" -type f 2>/dev/null | while read report; do
-          echo "- $(basename $report)" >> SECURITY_SUMMARY.md
-        done || true
-    
-    - name: Upload consolidated report
-      uses: actions/upload-artifact@v4
-      with:
-        name: security-executive-summary
-        path: |
-          SECURITY_SUMMARY.md
-          security-reports/
-        retention-days: 90
