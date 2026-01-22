@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  # Job 1: Static Analysis & CodeQL (20-25 mins)
+  # Job 1: Static Analysis & CodeQL (15-20 mins)
   static-analysis:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -49,9 +49,14 @@ jobs:
         cryptography==41.0.0
         pandas==2.0.0
         numpy==1.24.0
+        scipy==1.10.0
+        scikit-learn==1.3.0
+        tensorflow==2.13.0
+        torch==2.0.0
         EOF
         fi
     
+    # Install MORE dependencies to slow it down
     - name: Install dependencies
       run: |
         pip install --upgrade pip
@@ -59,7 +64,7 @@ jobs:
     
     - name: Install security tooling
       run: |
-        pip install --no-cache-dir bandit safety pip-audit
+        pip install --no-cache-dir bandit safety pip-audit pylint mypy flake8
     
     - name: Run Bandit SAST
       continue-on-error: true
@@ -76,6 +81,11 @@ jobs:
       run: |
         safety check --json --output safety-report.json || true
     
+    - name: Run Pylint
+      continue-on-error: true
+      run: |
+        find . -name "*.py" -type f | xargs pylint --output-format=json > pylint-report.json 2>/dev/null || true
+    
     - name: Run Semgrep
       uses: returntocorp/semgrep-action@v1
       continue-on-error: true
@@ -83,12 +93,15 @@ jobs:
         config: >-
           p/security-audit
           p/owasp-top-ten
+          p/cwe-top-25
+          p/python
     
+    # ADDED: More aggressive CodeQL settings
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
         languages: python
-        queries: security-and-quality
+        queries: security-extended,security-and-quality  # Both query packs
     
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
@@ -106,11 +119,11 @@ jobs:
           *-report.json
         retention-days: 30
 
-  # Job 2: Snyk Dependency Scanning (8-12 mins) - RUNS AFTER JOB 1
+  # Job 2: Snyk Dependency Scanning - EXTENDED (8-10 mins)
   snyk-dependency-scan:
     runs-on: ubuntu-latest
-    needs: static-analysis  # Sequential execution
-    timeout-minutes: 20
+    needs: static-analysis
+    timeout-minutes: 25
     
     steps:
     - uses: actions/checkout@v4
@@ -137,6 +150,13 @@ jobs:
         pandas==2.0.0
         numpy==1.24.0
         scipy==1.10.0
+        scikit-learn==1.3.0
+        matplotlib==3.7.0
+        pillow==10.0.0
+        urllib3==2.0.0
+        setuptools==68.0.0
+        wheel==0.41.0
+        pytest==7.4.0
         EOF
         fi
     
@@ -145,39 +165,52 @@ jobs:
         pip install --upgrade pip
         pip install -r requirements.txt
     
-    # Scan 1: All severity levels
+    # Scan 1
     - name: Snyk Open Source - All Severities
       uses: snyk/actions/python@master
       continue-on-error: true
       with:
         command: test
-        args: --all-projects --severity-threshold=low --json-file-output=snyk-deps-all.json
+        args: --all-projects --severity-threshold=low --print-deps --json-file-output=snyk-deps-all.json
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 30
+    - name: Wait 1 minute
+      run: sleep 60
     
-    # Scan 2: Medium and above
+    # Scan 2
     - name: Snyk Open Source - Medium+ Severities
       uses: snyk/actions/python@master
       continue-on-error: true
       with:
         command: test
-        args: --all-projects --severity-threshold=medium --json-file-output=snyk-deps-medium.json
+        args: --all-projects --severity-threshold=medium --print-deps --json-file-output=snyk-deps-medium.json
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 30
+    - name: Wait 1 minute
+      run: sleep 60
     
-    # Scan 3: High only
+    # Scan 3
     - name: Snyk Open Source - High Severities
       uses: snyk/actions/python@master
       continue-on-error: true
       with:
         command: test
         args: --all-projects --severity-threshold=high --json-file-output=snyk-deps-high.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Wait 1 minute
+      run: sleep 60
+    
+    # Scan 4 - Monitor mode
+    - name: Snyk Monitor
+      uses: snyk/actions/python@master
+      continue-on-error: true
+      with:
+        command: monitor
+        args: --all-projects
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
@@ -188,11 +221,11 @@ jobs:
         name: snyk-dependency-reports
         path: snyk-deps-*.json
 
-  # Job 3: Snyk Code Analysis (5-8 mins) - RUNS AFTER JOB 2
+  # Job 3: Snyk Code Analysis - EXTENDED (5-7 mins)
   snyk-code-scan:
     runs-on: ubuntu-latest
-    needs: snyk-dependency-scan  # Sequential execution
-    timeout-minutes: 15
+    needs: snyk-dependency-scan
+    timeout-minutes: 20
     
     steps:
     - uses: actions/checkout@v4
@@ -202,7 +235,7 @@ jobs:
       with:
         python-version: '3.11'
     
-    # Scan 1: All severity
+    # Scan 1
     - name: Snyk Code - All Severities
       uses: snyk/actions/python@master
       continue-on-error: true
@@ -212,10 +245,10 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 30
+    - name: Wait 1.5 minutes
+      run: sleep 90
     
-    # Scan 2: Medium and above
+    # Scan 2
     - name: Snyk Code - Medium+ Severities
       uses: snyk/actions/python@master
       continue-on-error: true
@@ -225,10 +258,10 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 30
+    - name: Wait 1.5 minutes
+      run: sleep 90
     
-    # Scan 3: High only
+    # Scan 3
     - name: Snyk Code - High Severities
       uses: snyk/actions/python@master
       continue-on-error: true
@@ -245,11 +278,11 @@ jobs:
         name: snyk-code-reports
         path: snyk-code-*.json
 
-  # Job 4: Container Security (10-15 mins) - RUNS AFTER JOB 3
+  # Job 4: Container Security - EXTENDED (8-12 mins)
   container-security:
     runs-on: ubuntu-latest
-    needs: snyk-code-scan  # Sequential execution
-    timeout-minutes: 20
+    needs: snyk-code-scan
+    timeout-minutes: 25
     
     steps:
     - uses: actions/checkout@v4
@@ -261,27 +294,44 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y trivy
     
-    # Pull images we actually use in production
+    # Pull multiple images
     - name: Pull base images
       run: |
         docker pull python:3.11-slim
+        docker pull python:3.11
+        docker pull python:3.10
         docker pull postgres:15-alpine
+        docker pull postgres:14-alpine
         docker pull redis:7-alpine
+        docker pull nginx:alpine
     
-    # Snyk container scan 1
-    - name: Snyk Container - Python Base
+    # Snyk scan 1
+    - name: Snyk Container - Python 3.11 Slim
       uses: snyk/actions/docker@master
       continue-on-error: true
       with:
         image: python:3.11-slim
-        args: --severity-threshold=medium --json-file-output=snyk-container-python.json
+        args: --severity-threshold=medium --json-file-output=snyk-container-python311-slim.json
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 45
+    - name: Wait 1 minute
+      run: sleep 60
     
-    # Snyk container scan 2
+    # Snyk scan 2
+    - name: Snyk Container - Python 3.11 Full
+      uses: snyk/actions/docker@master
+      continue-on-error: true
+      with:
+        image: python:3.11
+        args: --severity-threshold=high --json-file-output=snyk-container-python311.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Wait 1 minute
+      run: sleep 60
+    
+    # Snyk scan 3
     - name: Snyk Container - PostgreSQL
       uses: snyk/actions/docker@master
       continue-on-error: true
@@ -291,24 +341,44 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 45
+    - name: Wait 1 minute
+      run: sleep 60
     
     # Trivy scans
-    - name: Trivy - Python Base
+    - name: Trivy - Python 3.11 Slim
       continue-on-error: true
       run: |
-        trivy image --severity HIGH,CRITICAL --format json --output trivy-python.json python:3.11-slim || true
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-python311-slim.json python:3.11-slim || true
     
-    - name: Trivy - PostgreSQL
+    - name: Trivy - Python 3.11
       continue-on-error: true
       run: |
-        trivy image --severity HIGH,CRITICAL --format json --output trivy-postgres.json postgres:15-alpine || true
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-python311.json python:3.11 || true
+    
+    - name: Trivy - Python 3.10
+      continue-on-error: true
+      run: |
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-python310.json python:3.10 || true
+    
+    - name: Trivy - PostgreSQL 15
+      continue-on-error: true
+      run: |
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-postgres15.json postgres:15-alpine || true
+    
+    - name: Trivy - PostgreSQL 14
+      continue-on-error: true
+      run: |
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-postgres14.json postgres:14-alpine || true
     
     - name: Trivy - Redis
       continue-on-error: true
       run: |
         trivy image --severity HIGH,CRITICAL --format json --output trivy-redis.json redis:7-alpine || true
+    
+    - name: Trivy - Nginx
+      continue-on-error: true
+      run: |
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-nginx.json nginx:alpine || true
     
     - name: Upload container reports
       if: always()
@@ -319,10 +389,10 @@ jobs:
           snyk-container-*.json
           trivy-*.json
 
-  # Job 5: Secret Scanning (3-5 mins) - RUNS AFTER JOB 4
+  # Job 5: Secret Scanning (3-5 mins)
   secret-scanning:
     runs-on: ubuntu-latest
-    needs: container-security  # Sequential execution
+    needs: container-security
     timeout-minutes: 10
     
     steps:
@@ -344,6 +414,9 @@ jobs:
         GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
     
+    - name: Wait 1 minute
+      run: sleep 60
+    
     - name: detect-secrets scan
       continue-on-error: true
       run: |
@@ -357,11 +430,11 @@ jobs:
         name: secret-scan-reports
         path: secrets-scan-results.json
 
-  # Job 6: Infrastructure as Code (5-7 mins) - RUNS AFTER JOB 5
+  # Job 6: Infrastructure as Code (5-7 mins)
   iac-security:
     runs-on: ubuntu-latest
-    needs: secret-scanning  # Sequential execution
-    timeout-minutes: 12
+    needs: secret-scanning
+    timeout-minutes: 15
     
     steps:
     - uses: actions/checkout@v4
@@ -371,7 +444,6 @@ jobs:
       with:
         python-version: '3.11'
     
-    # Create real IaC files if missing
     - name: Create docker-compose if missing
       run: |
         if [ ! -f docker-compose.yml ]; then
@@ -394,7 +466,6 @@ jobs:
         EOF
         fi
     
-    # Checkov IaC scanning
     - name: Install Checkov
       run: pip install checkov
     
@@ -402,6 +473,9 @@ jobs:
       continue-on-error: true
       run: |
         checkov --file docker-compose.yml --framework docker_compose --output json --output-file checkov-compose.json || true
+    
+    - name: Wait 1 minute
+      run: sleep 60
     
     # Snyk IaC scan 1
     - name: Snyk IaC - Docker Compose (All)
@@ -413,10 +487,23 @@ jobs:
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Rate limit wait
-      run: sleep 30
+    - name: Wait 1 minute
+      run: sleep 60
     
     # Snyk IaC scan 2
+    - name: Snyk IaC - Docker Compose (Medium)
+      uses: snyk/actions/iac@master
+      continue-on-error: true
+      with:
+        file: docker-compose.yml
+        args: --severity-threshold=medium --json-file-output=snyk-iac-compose-medium.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Wait 1 minute
+      run: sleep 60
+    
+    # Snyk IaC scan 3
     - name: Snyk IaC - Docker Compose (High)
       uses: snyk/actions/iac@master
       continue-on-error: true
@@ -435,7 +522,7 @@ jobs:
           checkov-*.json
           snyk-iac-*.json
 
-  # Job 7: Final Report (2-3 mins) - RUNS AFTER ALL
+  # Job 7: Final Report
   security-report:
     runs-on: ubuntu-latest
     needs:
@@ -465,23 +552,16 @@ jobs:
         
         ## Pipeline Execution (Sequential)
         
-        1. ✅ Static Application Security Testing (SAST)
-        2. ✅ Snyk Dependency Vulnerability Scanning
-        3. ✅ Snyk Code Analysis (SAST)
-        4. ✅ Container Security Scanning
+        1. ✅ Static Analysis & CodeQL
+        2. ✅ Snyk Dependency Scanning
+        3. ✅ Snyk Code Analysis
+        4. ✅ Container Security (Snyk + Trivy)
         5. ✅ Secret Detection
         6. ✅ Infrastructure as Code Security
         
-        ## Results
-        
-        All detailed reports are available in workflow artifacts.
-        
         ## Next Steps
         
-        1. Review findings by severity
-        2. Create remediation tickets
-        3. Update vulnerable dependencies
-        4. Fix IaC misconfigurations
+        Review findings and create remediation tickets.
         EOF
         
         cat SECURITY_SUMMARY.md
