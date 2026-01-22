@@ -316,6 +316,9 @@ jobs:
       - name: Keep Session Alive
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
+          export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export no_proxy=localhost,127.0.0.1
           echo "Session started at: $(date)"
           echo "Will run for ${{ github.event.inputs.session_duration }} hours..."
           echo ""
