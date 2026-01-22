@@ -1,0 +1,39 @@
+name: Ultra Slow CodeQL Scan
+
+on: [push]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    # Install tons of dependencies to scan
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install massive dependency tree
+      run: |
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install django pandas numpy scipy tensorflow \
+                    requests flask fastapi sqlalchemy \
+                    pytest black mypy pylint
+        # Don't add .venv to gitignore - let it get scanned!
+    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: python
+        queries: security-and-quality  # Most comprehensive
+        threads: 1  # Single thread = slowest
+        ram: 1024   # Minimal RAM
+    
+    - name: Build (scans everything including .venv)
+      uses: github/codeql-action/autobuild@v3
+    
+    - name: Analyze
+      uses: github/codeql-action/analyze@v3
