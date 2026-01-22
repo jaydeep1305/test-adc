@@ -2,7 +2,7 @@ name: Production Security Pipeline
 
 on: 
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
   schedule:
     - cron: '0 2 * * 1'  # Weekly Monday 2 AM
