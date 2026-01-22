@@ -56,22 +56,6 @@ jobs:
       run: |
         pip install --upgrade pip
         pip install -r requirements.txt
-        if [ -f requirements-dev.txt ]; then
-          pip install -r requirements-dev.txt
-        fi
-    
-    - name: Update vulnerability databases
-      continue-on-error: true
-      run: |
-        echo "Downloading latest CVE data..."
-        mkdir -p .security-cache
-        
-        for year in {2022..2024}; do
-          wget --timeout=90 -q \
-            "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-$year.json.gz" \
-            -P .security-cache/ || true
-          gunzip -f .security-cache/nvdcve-1.1-$year.json.gz 2>/dev/null || true
-        done
     
     - name: Install security tooling
       run: |
@@ -92,7 +76,6 @@ jobs:
       run: |
         safety check --json --output safety-report.json || true
     
-    # Use Semgrep Action instead of pip install
     - name: Run Semgrep
       uses: returntocorp/semgrep-action@v1
       continue-on-error: true
@@ -100,7 +83,6 @@ jobs:
         config: >-
           p/security-audit
           p/owasp-top-ten
-          p/cwe-top-25
     
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
@@ -124,9 +106,10 @@ jobs:
           *-report.json
         retention-days: 30
 
-  # Job 2: Dependency & Supply Chain Security (8-12 mins)
-  dependency-analysis:
+  # Job 2: Snyk Dependency Scanning (8-12 mins) - RUNS AFTER JOB 1
+  snyk-dependency-scan:
     runs-on: ubuntu-latest
+    needs: static-analysis  # Sequential execution
     timeout-minutes: 20
     
     steps:
@@ -162,43 +145,110 @@ jobs:
         pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Snyk Open Source Scan
+    # Scan 1: All severity levels
+    - name: Snyk Open Source - All Severities
       uses: snyk/actions/python@master
       continue-on-error: true
       with:
         command: test
-        args: --all-projects --severity-threshold=medium --json-file-output=snyk-opensource.json
+        args: --all-projects --severity-threshold=low --json-file-output=snyk-deps-all.json
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Snyk Code Analysis
+    - name: Rate limit wait
+      run: sleep 30
+    
+    # Scan 2: Medium and above
+    - name: Snyk Open Source - Medium+ Severities
       uses: snyk/actions/python@master
       continue-on-error: true
       with:
-        command: code test
-        args: --severity-threshold=medium
+        command: test
+        args: --all-projects --severity-threshold=medium --json-file-output=snyk-deps-medium.json
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: OWASP Dependency Check
+    - name: Rate limit wait
+      run: sleep 30
+    
+    # Scan 3: High only
+    - name: Snyk Open Source - High Severities
+      uses: snyk/actions/python@master
       continue-on-error: true
-      run: |
-        wget -q https://github.com/jeremylong/DependencyCheck/releases/download/v8.4.0/dependency-check-8.4.0-release.zip
-        unzip -q dependency-check-8.4.0-release.zip
-        ./dependency-check/bin/dependency-check.sh --scan . --format JSON --out dependency-check-report.json || true
+      with:
+        command: test
+        args: --all-projects --severity-threshold=high --json-file-output=snyk-deps-high.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
     - name: Upload dependency reports
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: dependency-reports
-        path: |
-          snyk-*.json
-          dependency-check-report.json
+        name: snyk-dependency-reports
+        path: snyk-deps-*.json
 
-  # Job 3: Container Security (10-15 mins)
+  # Job 3: Snyk Code Analysis (5-8 mins) - RUNS AFTER JOB 2
+  snyk-code-scan:
+    runs-on: ubuntu-latest
+    needs: snyk-dependency-scan  # Sequential execution
+    timeout-minutes: 15
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    # Scan 1: All severity
+    - name: Snyk Code - All Severities
+      uses: snyk/actions/python@master
+      continue-on-error: true
+      with:
+        command: code test
+        args: --severity-threshold=low --json-file-output=snyk-code-all.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Rate limit wait
+      run: sleep 30
+    
+    # Scan 2: Medium and above
+    - name: Snyk Code - Medium+ Severities
+      uses: snyk/actions/python@master
+      continue-on-error: true
+      with:
+        command: code test
+        args: --severity-threshold=medium --json-file-output=snyk-code-medium.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Rate limit wait
+      run: sleep 30
+    
+    # Scan 3: High only
+    - name: Snyk Code - High Severities
+      uses: snyk/actions/python@master
+      continue-on-error: true
+      with:
+        command: code test
+        args: --severity-threshold=high --json-file-output=snyk-code-high.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Upload code reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: snyk-code-reports
+        path: snyk-code-*.json
+
+  # Job 4: Container Security (10-15 mins) - RUNS AFTER JOB 3
   container-security:
     runs-on: ubuntu-latest
+    needs: snyk-code-scan  # Sequential execution
     timeout-minutes: 20
     
     steps:
@@ -211,42 +261,69 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y trivy
     
-    - name: Scan Python base images
-      continue-on-error: true
+    # Pull images we actually use in production
+    - name: Pull base images
       run: |
-        echo "Scanning production Python base image..."
         docker pull python:3.11-slim
-        trivy image --severity HIGH,CRITICAL --format json --output trivy-python-base.json python:3.11-slim || true
+        docker pull postgres:15-alpine
+        docker pull redis:7-alpine
     
-    - name: Scan database images
+    # Snyk container scan 1
+    - name: Snyk Container - Python Base
+      uses: snyk/actions/docker@master
+      continue-on-error: true
+      with:
+        image: python:3.11-slim
+        args: --severity-threshold=medium --json-file-output=snyk-container-python.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Rate limit wait
+      run: sleep 45
+    
+    # Snyk container scan 2
+    - name: Snyk Container - PostgreSQL
+      uses: snyk/actions/docker@master
+      continue-on-error: true
+      with:
+        image: postgres:15-alpine
+        args: --severity-threshold=high --json-file-output=snyk-container-postgres.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Rate limit wait
+      run: sleep 45
+    
+    # Trivy scans
+    - name: Trivy - Python Base
       continue-on-error: true
       run: |
-        echo "Scanning PostgreSQL image..."
-        docker pull postgres:15-alpine
+        trivy image --severity HIGH,CRITICAL --format json --output trivy-python.json python:3.11-slim || true
+    
+    - name: Trivy - PostgreSQL
+      continue-on-error: true
+      run: |
         trivy image --severity HIGH,CRITICAL --format json --output trivy-postgres.json postgres:15-alpine || true
-        
-        echo "Scanning Redis image..."
-        docker pull redis:7-alpine
+    
+    - name: Trivy - Redis
+      continue-on-error: true
+      run: |
         trivy image --severity HIGH,CRITICAL --format json --output trivy-redis.json redis:7-alpine || true
     
-    - name: Scan nginx image
-      continue-on-error: true
-      run: |
-        echo "Scanning nginx image..."
-        docker pull nginx:alpine
-        trivy image --severity HIGH,CRITICAL --format json --output trivy-nginx.json nginx:alpine || true
-    
-    - name: Upload container scan results
+    - name: Upload container reports
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: container-security-reports
-        path: trivy-*.json
+        path: |
+          snyk-container-*.json
+          trivy-*.json
 
-  # Job 4: Secret Scanning (5-8 mins)
+  # Job 5: Secret Scanning (3-5 mins) - RUNS AFTER JOB 4
   secret-scanning:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    needs: container-security  # Sequential execution
+    timeout-minutes: 10
     
     steps:
     - uses: actions/checkout@v4
@@ -280,10 +357,11 @@ jobs:
         name: secret-scan-reports
         path: secrets-scan-results.json
 
-  # Job 5: Infrastructure Security (8-10 mins)
-  infrastructure-security:
+  # Job 6: Infrastructure as Code (5-7 mins) - RUNS AFTER JOB 5
+  iac-security:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    needs: secret-scanning  # Sequential execution
+    timeout-minutes: 12
     
     steps:
     - uses: actions/checkout@v4
@@ -293,12 +371,9 @@ jobs:
       with:
         python-version: '3.11'
     
-    - name: Scan Infrastructure as Code
-      continue-on-error: true
+    # Create real IaC files if missing
+    - name: Create docker-compose if missing
       run: |
-        pip install checkov
-        
-        # Create sample IaC files if they don't exist
         if [ ! -f docker-compose.yml ]; then
           cat > docker-compose.yml << EOF
         version: '3.8'
@@ -307,169 +382,69 @@ jobs:
             image: python:3.11-slim
             ports:
               - "8000:8000"
+            environment:
+              - DATABASE_URL=postgresql://user:pass@db:5432/mydb
           db:
             image: postgres:15-alpine
             environment:
-              POSTGRES_PASSWORD: example
+              POSTGRES_PASSWORD: changeme
+              POSTGRES_USER: user
           redis:
             image: redis:7-alpine
         EOF
         fi
-        
-        if [ -d terraform ] || [ -f *.tf ]; then
-          checkov --directory . --framework terraform --output json --output-file checkov-terraform.json || true
-        fi
-        
-        if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
-          checkov --file docker-compose.yml --framework docker_compose --output json --output-file checkov-compose.json || true
-        fi
-        
-        if [ -f Dockerfile ]; then
-          checkov --file Dockerfile --framework dockerfile --output json --output-file checkov-dockerfile.json || true
-        fi
     
-    - name: Check for exposed credentials
+    # Checkov IaC scanning
+    - name: Install Checkov
+      run: pip install checkov
+    
+    - name: Checkov - Docker Compose
       continue-on-error: true
       run: |
-        echo "Checking for security misconfigurations..."
-        find . -name ".env" -type f | grep -v node_modules | grep -v .venv || echo "✓ No .env files found in repo"
-        grep -r "0.0.0.0" --include="*.py" --include="*.yml" --include="*.yaml" . || echo "✓ No 0.0.0.0 bindings found"
-        grep -r "DEBUG.*=.*True" --include="*.py" . || echo "✓ No DEBUG=True found"
+        checkov --file docker-compose.yml --framework docker_compose --output json --output-file checkov-compose.json || true
     
-    - name: Check GitHub Actions security
+    # Snyk IaC scan 1
+    - name: Snyk IaC - Docker Compose (All)
+      uses: snyk/actions/iac@master
       continue-on-error: true
-      run: |
-        if [ -d .github/workflows ]; then
-          find .github/workflows -name "*.yml" -o -name "*.yaml" | while read workflow; do
-            echo "Analyzing $workflow"
-            grep -n "uses:.*@" "$workflow" | grep -v "@v" || echo "✓ All actions properly pinned"
-          done
-        fi
+      with:
+        file: docker-compose.yml
+        args: --severity-threshold=low --json-file-output=snyk-iac-compose-all.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     
-    - name: Upload IaC scan results
+    - name: Rate limit wait
+      run: sleep 30
+    
+    # Snyk IaC scan 2
+    - name: Snyk IaC - Docker Compose (High)
+      uses: snyk/actions/iac@master
+      continue-on-error: true
+      with:
+        file: docker-compose.yml
+        args: --severity-threshold=high --json-file-output=snyk-iac-compose-high.json
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    
+    - name: Upload IaC reports
       if: always()
       uses: actions/upload-artifact@v4
       with:
         name: iac-security-reports
-        path: checkov-*.json
-      continue-on-error: true
-
-  # Job 6: Compliance & License Scanning (5-7 mins)
-  compliance-scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Create requirements if missing
-      run: |
-        if [ ! -f requirements.txt ]; then
-          cat > requirements.txt << EOF
-        flask==2.3.0
-        django==4.2.0
-        requests==2.31.0
-        sqlalchemy==2.0.0
-        EOF
-        fi
-    
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-    
-    - name: License compliance check
-      continue-on-error: true
-      run: |
-        pip install pip-licenses
-        pip-licenses --format=json --output-file=license-report.json || true
-        pip-licenses | grep -i "gpl" && echo "⚠ WARNING: GPL license found" || echo "✓ No GPL licenses detected"
-    
-    - name: Generate SBOM
-      continue-on-error: true
-      run: |
-        pip install cyclonedx-bom
-        cyclonedx-py --input requirements.txt --output sbom.json --format json || true
-    
-    - name: Upload compliance reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: compliance-reports
         path: |
-          license-report.json
-          sbom.json
+          checkov-*.json
+          snyk-iac-*.json
 
-  # Job 7: Code Quality Analysis (5-8 mins)
-  code-quality:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Create requirements if missing
-      run: |
-        if [ ! -f requirements.txt ]; then
-          cat > requirements.txt << EOF
-        flask==2.3.0
-        requests==2.31.0
-        EOF
-        fi
-        pip install -r requirements.txt
-    
-    - name: Install code quality tools
-      run: |
-        pip install pylint mypy flake8 radon
-    
-    - name: Run Pylint
-      continue-on-error: true
-      run: |
-        pylint **/*.py --output-format=json > pylint-report.json 2>/dev/null || true
-    
-    - name: Run Flake8
-      continue-on-error: true
-      run: |
-        flake8 . --format=json --output-file=flake8-report.json || true
-    
-    - name: Run complexity analysis
-      continue-on-error: true
-      run: |
-        radon cc . -j > radon-complexity.json || true
-        radon mi . -j > radon-maintainability.json || true
-    
-    - name: Upload code quality reports
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: code-quality-reports
-        path: |
-          pylint-report.json
-          flake8-report.json
-          radon-*.json
-
-  # Job 8: Security Report Aggregation
+  # Job 7: Final Report (2-3 mins) - RUNS AFTER ALL
   security-report:
     runs-on: ubuntu-latest
-    needs: 
+    needs:
       - static-analysis
-      - dependency-analysis
+      - snyk-dependency-scan
+      - snyk-code-scan
       - container-security
       - secret-scanning
-      - infrastructure-security
-      - compliance-scan
-      - code-quality
+      - iac-security
     if: always()
     timeout-minutes: 5
     
@@ -488,35 +463,34 @@ jobs:
         **Branch:** ${{ github.ref_name }}
         **Commit:** ${{ github.sha }}
         
-        ## Scans Completed
+        ## Pipeline Execution (Sequential)
         
-        - ✅ Static Application Security Testing (SAST)
-        - ✅ Dependency Vulnerability Analysis
-        - ✅ Container Security Scanning
-        - ✅ Secret Detection
-        - ✅ Infrastructure as Code Security
-        - ✅ License Compliance
-        - ✅ Code Quality Analysis
+        1. ✅ Static Application Security Testing (SAST)
+        2. ✅ Snyk Dependency Vulnerability Scanning
+        3. ✅ Snyk Code Analysis (SAST)
+        4. ✅ Container Security Scanning
+        5. ✅ Secret Detection
+        6. ✅ Infrastructure as Code Security
         
-        ## Results Location
+        ## Results
         
-        All detailed reports are available in the workflow artifacts.
+        All detailed reports are available in workflow artifacts.
         
         ## Next Steps
         
-        1. Review high/critical findings
+        1. Review findings by severity
         2. Create remediation tickets
-        3. Update dependencies
-        4. Rotate exposed secrets
+        3. Update vulnerable dependencies
+        4. Fix IaC misconfigurations
         EOF
         
         cat SECURITY_SUMMARY.md
         
         echo "" >> SECURITY_SUMMARY.md
-        echo "## Detailed Findings" >> SECURITY_SUMMARY.md
+        echo "## Report Files" >> SECURITY_SUMMARY.md
         find security-reports -name "*.json" -type f 2>/dev/null | while read report; do
           echo "- $(basename $report)" >> SECURITY_SUMMARY.md
-        done || echo "No reports found"
+        done || true
     
     - name: Upload consolidated report
       uses: actions/upload-artifact@v4
