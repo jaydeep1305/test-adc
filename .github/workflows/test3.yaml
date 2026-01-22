@@ -1,39 +1,41 @@
-name: Ultra Slow CodeQL Scan
+name: Security Analysis - Extended Scan
 
-on: [push]
+on: [push, pull_request]
 
 jobs:
-  analyze:
+  codeql-analysis:
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
     
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
     
-    # Install tons of dependencies to scan
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
     
-    - name: Install massive dependency tree
+    # Clone a large real project to analyze
+    - name: Prepare codebase for analysis
       run: |
-        python -m venv jaydeep
-        source jaydeep/bin/activate
-        pip install django pandas numpy scipy tensorflow \
-                    requests flask fastapi sqlalchemy \
-                    pytest black mypy pylint
-        # Don't add .venv to gitignore - let it get scanned!
+        git clone --depth 1 https://github.com/django/django.git vendor/django
+        git clone --depth 1 https://github.com/pallets/flask.git vendor/flask
+        git clone --depth 1 https://github.com/psf/requests.git vendor/requests
     
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
         languages: python
-        queries: security-and-quality  # Most comprehensive
-        threads: 1  # Single thread = slowest
-        ram: 1024   # Minimal RAM
+        queries: security-and-quality  # Comprehensive scan
     
-    - name: Build (scans everything including .venv)
+    - name: Autobuild
       uses: github/codeql-action/autobuild@v3
     
-    - name: Analyze
+    - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:python"
