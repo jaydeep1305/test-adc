@@ -17,8 +17,8 @@ jobs:
     
     - name: Install massive dependency tree
       run: |
-        python -m venv .venv
-        source .venv/bin/activate
+        python -m venv jaydeep
+        source jaydeep/bin/activate
         pip install django pandas numpy scipy tensorflow \
                     requests flask fastapi sqlalchemy \
                     pytest black mypy pylint
