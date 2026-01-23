@@ -263,6 +263,11 @@ jobs:
 
       - name: Start Cloudflare Tunnel
         run: |
+          export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+
           echo "Starting Cloudflare Tunnel..."
           cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
           sleep 10
@@ -318,6 +323,8 @@ jobs:
           export PATH=$PATH:/opt/TurboVNC/bin
           export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
           export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
           export no_proxy=localhost,127.0.0.1
           echo "Session started at: $(date)"
           echo "Will run for ${{ github.event.inputs.session_duration }} hours..."
