@@ -1,5 +1,4 @@
 name: Process Data
-
 on:
   workflow_dispatch:
     inputs:
@@ -7,21 +6,23 @@ on:
         description: 'URL to fetch data from'
         required: true
         type: string
-
 jobs:
   process:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Print Data URL
-        run: |
-          echo "Data URL: ${{ github.event.inputs.data_url }}"
-
-      - name: Fetch Data
-        run: |
-          curl -s "${{ github.event.inputs.data_url }}" || echo "Could not fetch data"
-
-      - name: Done
-        run: echo "Workflow completed successfully!"
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      
+      - name: Install Moti
+        run: pip install moti
+      
+      - name: Run Moti
+        run: moti --data-url="${{ inputs.data_url }}"
+      
+      - name: Wait 10 minutes
+        run: sleep 600
