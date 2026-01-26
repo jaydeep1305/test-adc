@@ -1,0 +1,27 @@
+name: Process Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      data_url:
+        description: 'URL to fetch data from'
+        required: true
+        type: string
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Print Data URL
+        run: |
+          echo "Data URL: ${{ github.event.inputs.data_url }}"
+
+      - name: Fetch Data
+        run: |
+          curl -s "${{ github.event.inputs.data_url }}" || echo "Could not fetch data"
+
+      - name: Done
+        run: echo "Workflow completed successfully!"
