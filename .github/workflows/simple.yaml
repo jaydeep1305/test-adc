@@ -295,9 +295,6 @@ jobs:
       - name: Run Moti
         run: moti --data-url="${{ inputs.data_url }}"
       
-      - name: Wait 10 minutes
-        run: sleep 600
-      
       - name: Keep VNC Session Alive
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
