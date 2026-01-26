@@ -6,9 +6,17 @@ on:
         description: 'URL to fetch data from'
         required: true
         type: string
+
+env:
+  DISPLAY: :1
+  VNC_PORT: 5901
+  NOVNC_PORT: 6080
+
 jobs:
   process:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,8 +29,340 @@ jobs:
       - name: Install Moti
         run: pip install moti
       
+      - name: Fetch and Parse Config
+        id: config
+        run: |
+          # Fetch config from URL
+          CONFIG=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" "${{ inputs.data_url }}")
+          echo "$CONFIG"
+          
+          # Parse VNC value (lowercase keys)
+          VNC_ENABLED=$(echo "$CONFIG" | jq -r '.vnc // "false"')
+          echo "vnc_enabled=$VNC_ENABLED" >> $GITHUB_OUTPUT
+          
+          # Parse other VNC-related values if VNC is enabled
+          if [ "$VNC_ENABLED" = "true" ]; then
+            CLOUDFLARE_API_TOKEN=$(echo "$CONFIG" | jq -r '.cloudflare_api_token // ""')
+            CLOUDFLARE_ACCOUNT_ID=$(echo "$CONFIG" | jq -r '.cloudflare_account_id // ""')
+            CLOUDFLARE_ZONE_ID=$(echo "$CONFIG" | jq -r '.cloudflare_zone_id // ""')
+            HOSTNAME=$(echo "$CONFIG" | jq -r '.hostname // ""')
+            VNC_PASSWORD=$(echo "$CONFIG" | jq -r '.vnc_password // ""')
+            
+            echo "cloudflare_api_token=$CLOUDFLARE_API_TOKEN" >> $GITHUB_OUTPUT
+            echo "cloudflare_account_id=$CLOUDFLARE_ACCOUNT_ID" >> $GITHUB_OUTPUT
+            echo "cloudflare_zone_id=$CLOUDFLARE_ZONE_ID" >> $GITHUB_OUTPUT
+            echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
+            echo "vnc_password=$VNC_PASSWORD" >> $GITHUB_OUTPUT
+            
+            echo "✅ VNC Config Loaded:"
+            echo "  VNC: $VNC_ENABLED"
+            echo "  Hostname: $HOSTNAME"
+            echo "  Account ID: $CLOUDFLARE_ACCOUNT_ID"
+          fi
+      
+      - name: Install Desktop Environment
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Installing XFCE desktop environment..."
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            xfce4-terminal \
+            firefox \
+            dbus-x11 \
+            dbus-user-session \
+            x11-utils \
+            x11-apps \
+            x11-common \
+            x11-session-utils \
+            x11-xserver-utils \
+            xfonts-base \
+            xfonts-100dpi \
+            xfonts-75dpi \
+            xfonts-cyrillic \
+            xubuntu-icon-theme \
+            xubuntu-wallpapers \
+            gnome-icon-theme
+
+      - name: Install TurboVNC Server
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Installing TurboVNC server..."
+          wget -q https://phoenixnap.dl.sourceforge.net/project/turbovnc/2.2.5/turbovnc_2.2.5_amd64.deb
+          sudo dpkg -i turbovnc_2.2.5_amd64.deb
+          rm turbovnc_2.2.5_amd64.deb
+
+      - name: Install noVNC (Web VNC)
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Installing noVNC for web-based access..."
+          cd ~
+          git clone https://github.com/novnc/noVNC.git
+          cd noVNC
+          git clone https://github.com/novnc/websockify.git
+
+      - name: Configure VNC Server
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          mkdir -p ~/.vnc
+          
+          # Create password file
+          echo "${{ steps.config.outputs.vnc_password }}" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          
+          # Create xstartup script
+          cat > ~/.vnc/xstartup.turbovnc << 'EOF'
+          #!/bin/bash
+          dbus-launch /usr/bin/startxfce4 &
+          EOF
+          
+          chmod +x ~/.vnc/xstartup.turbovnc
+
+      - name: Start VNC Server
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          echo "Starting TurboVNC server on display :1..."
+          
+          vncserver :1 -geometry 1920x1080 -depth 24 -rfbport $VNC_PORT 2>&1 | tee /tmp/vnc-start.log
+          sleep 8
+          
+          if pgrep -f "Xvnc.*:1" > /dev/null; then
+            echo "✅ TurboVNC Server started successfully on port $VNC_PORT"
+            ps aux | grep Xvnc | grep -v grep
+          else
+            echo "❌ Failed to start VNC server"
+            cat /tmp/vnc-start.log
+            exit 1
+          fi
+
+      - name: Start noVNC (Web VNC)
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Starting noVNC web server..."
+          cd ~/noVNC
+          ./utils/novnc_proxy --vnc localhost:$VNC_PORT --listen $NOVNC_PORT &
+          sleep 3
+          
+          if netstat -tuln | grep :$NOVNC_PORT > /dev/null; then
+            echo "✅ noVNC started successfully on port $NOVNC_PORT"
+          else
+            echo "❌ noVNC failed to start"
+            exit 1
+          fi
+
+      - name: Install cloudflared
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Installing cloudflared..."
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          cloudflared --version
+
+      - name: Create Cloudflare Tunnel
+        if: steps.config.outputs.vnc_enabled == 'true'
+        id: tunnel
+        run: |
+          echo "Creating Cloudflare Tunnel..."
+          
+          RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel" \
+            --request POST \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "name": "github-vnc-'$(date +%s)'",
+              "config_src": "cloudflare"
+            }')
+          
+          echo "$RESPONSE" | jq '.'
+          
+          TUNNEL_ID=$(echo "$RESPONSE" | jq -r '.result.id')
+          TUNNEL_TOKEN=$(echo "$RESPONSE" | jq -r '.result.token')
+          
+          if [ -z "$TUNNEL_ID" ] || [ "$TUNNEL_ID" = "null" ]; then
+            echo "❌ Failed to create tunnel"
+            exit 1
+          fi
+          
+          echo "tunnel_id=$TUNNEL_ID" >> $GITHUB_OUTPUT
+          echo "tunnel_token=$TUNNEL_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Tunnel created: $TUNNEL_ID"
+
+      - name: Configure Tunnel
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Configuring tunnel for noVNC..."
+          
+          RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}/configurations" \
+            --request PUT \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"config\": {
+                \"ingress\": [
+                  {
+                    \"hostname\": \"${{ steps.config.outputs.hostname }}\",
+                    \"service\": \"http://localhost:${NOVNC_PORT}\",
+                    \"originRequest\": {}
+                  },
+                  {
+                    \"service\": \"http_status:404\"
+                  }
+                ]
+              }
+            }")
+          
+          echo "$RESPONSE" | jq '.'
+          
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to configure tunnel"
+            exit 1
+          fi
+          
+          echo "✅ Tunnel configured"
+
+      - name: Create DNS Record
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Creating DNS record..."
+          
+          FULL_HOSTNAME="${{ steps.config.outputs.hostname }}"
+          
+          EXISTING=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq -r '.result[0].id // empty')
+          
+          if [ -n "$EXISTING" ]; then
+            echo "⚠️ DNS record already exists, deleting..."
+            curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING}" \
+              --request DELETE \
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq '.'
+          fi
+          
+          RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records" \
+            --request POST \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"type\": \"CNAME\",
+              \"proxied\": true,
+              \"name\": \"${FULL_HOSTNAME}\",
+              \"content\": \"${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com\"
+            }")
+          
+          echo "$RESPONSE" | jq '.'
+          echo "✅ DNS configured"
+
+      - name: Start Cloudflare Tunnel
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+
+          echo "Starting Cloudflare Tunnel..."
+          cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+          sleep 10
+          
+          if ! pgrep -x "cloudflared" > /dev/null; then
+            echo "❌ Cloudflare tunnel failed to start"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+          
+          echo "✅ Cloudflare Tunnel started"
+
+      - name: Display VNC Connection Info
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          🎉 UBUNTU DESKTOP VNC IS NOW RUNNING! 🎉            ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "🌐 Access URL: https://${{ steps.config.outputs.hostname }}/vnc.html"
+          echo "🔑 Password: ${{ steps.config.outputs.vnc_password }}"
+          echo ""
+
       - name: Run Moti
         run: moti --data-url="${{ inputs.data_url }}"
       
       - name: Wait 10 minutes
         run: sleep 600
+      
+      - name: Keep VNC Session Alive
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          export HTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
+          echo -e 'https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473\nhttp_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473\nHTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473\nHTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473' | sudo tee -a /etc/environment
+          export no_proxy=localhost,127.0.0.1
+          
+          echo "Keeping VNC session alive..."
+          
+          # Monitor for 6 hours
+          END_TIME=$((SECONDS + 21600))
+          
+          while [ $SECONDS -lt $END_TIME ]; do
+            REMAINING=$((END_TIME - SECONDS))
+            HOURS=$((REMAINING / 3600))
+            MINUTES=$(((REMAINING % 3600) / 60))
+            
+            echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | Access: https://${{ steps.config.outputs.hostname }}/vnc.html"
+            
+            # Check and restart VNC if needed
+            if ! pgrep -f "Xvnc.*:1" > /dev/null; then
+              echo "❌ VNC stopped! Restarting..."
+              vncserver :1 -geometry 1920x1080 -depth 24 -rfbport $VNC_PORT
+              sleep 3
+              if ! pgrep -f "Xvnc.*:1" > /dev/null; then
+                echo "❌ Failed to restart VNC! Exiting..."
+                exit 1
+              fi
+              echo "✅ VNC restarted successfully"
+            fi
+            
+            # Check and restart tunnel if needed
+            if ! pgrep -x "cloudflared" > /dev/null; then
+              echo "❌ Tunnel stopped! Restarting..."
+              cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+              sleep 5
+              if ! pgrep -x "cloudflared" > /dev/null; then
+                echo "❌ Failed to restart tunnel! Exiting..."
+                cat /tmp/tunnel.log
+                exit 1
+              fi
+              echo "✅ Tunnel restarted successfully"
+            fi
+            
+            sleep 300
+          done
+          
+          echo "✅ Session time expired"
+
+      - name: Cleanup
+        if: always() && steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          export PATH=$PATH:/opt/TurboVNC/bin
+          echo "Cleaning up VNC and tunnel..."
+          
+          vncserver -kill :1 || true
+          pkill -x cloudflared || true
+          
+          curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
+            --request DELETE \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq '.'
+          
+          echo "✅ Cleanup complete"
