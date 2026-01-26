@@ -292,9 +292,16 @@ jobs:
           echo "🔑 Password: ${{ steps.config.outputs.vnc_password }}"
           echo ""
 
-      - name: Run Moti
-        run: moti --data-url="${{ inputs.data_url }}"
-      
+      - name: Run Moti on Desktop
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          export DISPLAY=:1
+          # Run Moti in a visible terminal on the desktop
+          xfce4-terminal --maximize --title="Moti Process" \
+            --command="bash -c 'moti --data-url=\"${{ inputs.data_url }}\"; echo \"Moti completed. Press Enter to close...\"; read'" &
+          sleep 5
+          echo "✅ Moti started in desktop terminal"
+
       - name: Keep VNC Session Alive
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
@@ -309,7 +316,7 @@ jobs:
           echo "Keeping VNC session alive..."
           
           # Monitor for 6 hours
-          END_TIME=$((SECONDS + 21600))
+          END_TIME=$((SECONDS + 300))
           
           while [ $SECONDS -lt $END_TIME ]; do
             REMAINING=$((END_TIME - SECONDS))
@@ -343,7 +350,7 @@ jobs:
               echo "✅ Tunnel restarted successfully"
             fi
             
-            sleep 300
+            sleep 100
           done
           
           echo "✅ Session time expired"
