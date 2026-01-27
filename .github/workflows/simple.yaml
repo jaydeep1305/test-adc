@@ -33,32 +33,42 @@ jobs:
           CONFIG=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" "${{ inputs.data_url }}")
           echo "$CONFIG"
           
-          # Parse Cloudflare value (lowercase keys)
+          # Parse VNC and Cloudflare values (lowercase keys)
+          VNC_ENABLED=$(echo "$CONFIG" | jq -r '.vnc_enabled // "false"')
           CLOUDFLARE_ENABLED=$(echo "$CONFIG" | jq -r '.cloudflare_enabled // "false"')
+          echo "vnc_enabled=$VNC_ENABLED" >> $GITHUB_OUTPUT
           echo "cloudflare_enabled=$CLOUDFLARE_ENABLED" >> $GITHUB_OUTPUT
           
-          # Parse other Cloudflare-related values if Cloudflare is enabled
+          # Parse VNC password if VNC is enabled
+          if [ "$VNC_ENABLED" = "true" ]; then
+            VNC_PASSWORD=$(echo "$CONFIG" | jq -r '.vnc_password // ""')
+            echo "vnc_password=$VNC_PASSWORD" >> $GITHUB_OUTPUT
+          fi
+          
+          # Parse Cloudflare-related values if Cloudflare is enabled
           if [ "$CLOUDFLARE_ENABLED" = "true" ]; then
             CLOUDFLARE_API_TOKEN=$(echo "$CONFIG" | jq -r '.cloudflare_api_token // ""')
             CLOUDFLARE_ACCOUNT_ID=$(echo "$CONFIG" | jq -r '.cloudflare_account_id // ""')
             CLOUDFLARE_ZONE_ID=$(echo "$CONFIG" | jq -r '.cloudflare_zone_id // ""')
             HOSTNAME=$(echo "$CONFIG" | jq -r '.hostname // ""')
-            VNC_PASSWORD=$(echo "$CONFIG" | jq -r '.vnc_password // ""')
             
             echo "cloudflare_api_token=$CLOUDFLARE_API_TOKEN" >> $GITHUB_OUTPUT
             echo "cloudflare_account_id=$CLOUDFLARE_ACCOUNT_ID" >> $GITHUB_OUTPUT
             echo "cloudflare_zone_id=$CLOUDFLARE_ZONE_ID" >> $GITHUB_OUTPUT
             echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
-            echo "vnc_password=$VNC_PASSWORD" >> $GITHUB_OUTPUT
             
             echo "✅ Cloudflare Config Loaded:"
             echo "  Cloudflare: $CLOUDFLARE_ENABLED"
             echo "  Hostname: $HOSTNAME"
             echo "  Account ID: ${CLOUDFLARE_ACCOUNT_ID:0:8}..."
           fi
+          
+          echo "✅ Config Loaded:"
+          echo "  VNC: $VNC_ENABLED"
+          echo "  Cloudflare: $CLOUDFLARE_ENABLED"
       
       - name: Install Desktop Environment
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           echo "Installing XFCE desktop environment..."
           sudo apt-get update
@@ -83,7 +93,7 @@ jobs:
             gnome-icon-theme
 
       - name: Install Chromium Browser
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           echo "Installing Chromium browser..."
           sudo apt-get update
@@ -91,7 +101,7 @@ jobs:
           chromium-browser --version
           
       - name: Install TurboVNC Server
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           echo "Installing TurboVNC server..."
           wget -q https://phoenixnap.dl.sourceforge.net/project/turbovnc/2.2.5/turbovnc_2.2.5_amd64.deb
@@ -99,7 +109,7 @@ jobs:
           rm turbovnc_2.2.5_amd64.deb
 
       - name: Install noVNC (Web VNC)
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           echo "Installing noVNC for web-based access..."
           cd ~
@@ -108,7 +118,7 @@ jobs:
           git clone https://github.com/novnc/websockify.git
 
       - name: Configure VNC Server
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
           mkdir -p ~/.vnc
@@ -131,7 +141,7 @@ jobs:
           chmod +x ~/.vnc/xstartup.turbovnc
 
       - name: Start VNC Server
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
           echo "Starting TurboVNC server on display :1..."
@@ -149,7 +159,7 @@ jobs:
           fi
 
       - name: Start noVNC (Web VNC)
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           echo "Starting noVNC web server..."
           cd ~/noVNC
@@ -309,7 +319,7 @@ jobs:
           echo ""
           
       - name: Run Moti on Desktop
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export DISPLAY=:1
           export NO_AT_BRIDGE=1
@@ -329,7 +339,7 @@ jobs:
           fi
 
       - name: Keep VNC Session Alive
-        if: steps.config.outputs.cloudflare_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
           
@@ -343,7 +353,11 @@ jobs:
             HOURS=$((REMAINING / 3600))
             MINUTES=$(((REMAINING % 3600) / 60))
             
-            echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | Access: https://${{ steps.config.outputs.hostname }}/vnc.html"
+            if [ "${{ steps.config.outputs.cloudflare_enabled }}" = "true" ]; then
+              echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | Access: https://${{ steps.config.outputs.hostname }}/vnc.html"
+            else
+              echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | VNC running locally"
+            fi
             
             # Check and restart VNC if needed
             if ! pgrep -f "Xvnc.*:1" > /dev/null; then
@@ -357,17 +371,19 @@ jobs:
               echo "✅ VNC restarted successfully"
             fi
             
-            # Check and restart tunnel if needed
-            if ! pgrep -x "cloudflared" > /dev/null; then
-              echo "❌ Tunnel stopped! Restarting..."
-              cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
-              sleep 5
+            # Check and restart tunnel if Cloudflare is enabled
+            if [ "${{ steps.config.outputs.cloudflare_enabled }}" = "true" ]; then
               if ! pgrep -x "cloudflared" > /dev/null; then
-                echo "❌ Failed to restart tunnel! Exiting..."
-                cat /tmp/tunnel.log
-                exit 1
+                echo "❌ Tunnel stopped! Restarting..."
+                cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+                sleep 5
+                if ! pgrep -x "cloudflared" > /dev/null; then
+                  echo "❌ Failed to restart tunnel! Exiting..."
+                  cat /tmp/tunnel.log
+                  exit 1
+                fi
+                echo "✅ Tunnel restarted successfully"
               fi
-              echo "✅ Tunnel restarted successfully"
             fi
             
             sleep 30
@@ -375,39 +391,44 @@ jobs:
           
           echo "✅ Session time expired"
           
-          # Remove Cloudflare tunnel and DNS record
-          echo "Removing Cloudflare tunnel and DNS record..."
-          
-          # Delete DNS record
-          FULL_HOSTNAME="${{ steps.config.outputs.hostname }}"
-          EXISTING_DNS=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
-            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq -r '.result[0].id // empty')
-          
-          if [ -n "$EXISTING_DNS" ]; then
-            curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-              "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING_DNS}" \
-              --request DELETE \
-              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null
-            echo "✅ DNS record deleted"
-          fi
-          
-          # Delete Cloudflare tunnel
-          if [ -n "${{ steps.tunnel.outputs.tunnel_id }}" ] && [ "${{ steps.tunnel.outputs.tunnel_id }}" != "null" ]; then
-            curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-              "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
-              --request DELETE \
-              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null
-            echo "✅ Cloudflare tunnel deleted"
+          # Remove Cloudflare tunnel and DNS record if Cloudflare was enabled
+          if [ "${{ steps.config.outputs.cloudflare_enabled }}" = "true" ]; then
+            echo "Removing Cloudflare tunnel and DNS record..."
+            
+            # Delete DNS record
+            FULL_HOSTNAME="${{ steps.config.outputs.hostname }}"
+            EXISTING_DNS=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq -r '.result[0].id // empty')
+            
+            if [ -n "$EXISTING_DNS" ]; then
+              curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING_DNS}" \
+                --request DELETE \
+                --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null
+              echo "✅ DNS record deleted"
+            fi
+            
+            # Delete Cloudflare tunnel
+            if [ -n "${{ steps.tunnel.outputs.tunnel_id }}" ] && [ "${{ steps.tunnel.outputs.tunnel_id }}" != "null" ]; then
+              curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
+                --request DELETE \
+                --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null
+              echo "✅ Cloudflare tunnel deleted"
+            fi
           fi
 
       - name: Cleanup
-        if: always() && steps.config.outputs.cloudflare_enabled == 'true'
+        if: always() && steps.config.outputs.vnc_enabled == 'true'
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
           echo "Cleaning up VNC and tunnel..."
           
           vncserver -kill :1 || true
-          pkill -x cloudflared || true
+          
+          if [ "${{ steps.config.outputs.cloudflare_enabled }}" = "true" ]; then
+            pkill -x cloudflared || true
+          fi
           
           echo "✅ Cleanup complete"
