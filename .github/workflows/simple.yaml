@@ -54,7 +54,7 @@ jobs:
             echo "✅ VNC Config Loaded:"
             echo "  VNC: $VNC_ENABLED"
             echo "  Hostname: $HOSTNAME"
-            echo "  Account ID: $CLOUDFLARE_ACCOUNT_ID"
+            echo "  Account ID: ${CLOUDFLARE_ACCOUNT_ID:0:8}..."
           fi
       
       - name: Install Desktop Environment
@@ -112,6 +112,11 @@ jobs:
           # Create xstartup script
           cat > ~/.vnc/xstartup.turbovnc << 'EOF'
           #!/bin/bash
+          # Suppress accessibility warnings
+          export NO_AT_BRIDGE=1
+          export SESSION_MANAGER=""
+          
+          # Start XFCE desktop
           dbus-launch /usr/bin/startxfce4 &
           EOF
           
@@ -174,13 +179,19 @@ jobs:
               "config_src": "cloudflare"
             }')
           
-          echo "$RESPONSE" | jq '.'
+          # Check if tunnel creation was successful
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to create tunnel"
+            echo "$RESPONSE" | jq '.'
+            exit 1
+          fi
           
           TUNNEL_ID=$(echo "$RESPONSE" | jq -r '.result.id')
           TUNNEL_TOKEN=$(echo "$RESPONSE" | jq -r '.result.token')
           
           if [ -z "$TUNNEL_ID" ] || [ "$TUNNEL_ID" = "null" ]; then
-            echo "❌ Failed to create tunnel"
+            echo "❌ Failed to extract tunnel ID"
             exit 1
           fi
           
@@ -213,11 +224,10 @@ jobs:
               }
             }")
           
-          echo "$RESPONSE" | jq '.'
-          
           SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
           if [ "$SUCCESS" != "true" ]; then
             echo "❌ Failed to configure tunnel"
+            echo "$RESPONSE" | jq '.'
             exit 1
           fi
           
@@ -239,7 +249,7 @@ jobs:
             curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
               "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING}" \
               --request DELETE \
-              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq '.'
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null
           fi
           
           RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
@@ -254,17 +264,18 @@ jobs:
               \"content\": \"${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com\"
             }")
           
-          echo "$RESPONSE" | jq '.'
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to create DNS record"
+            echo "$RESPONSE" | jq '.'
+            exit 1
+          fi
+          
           echo "✅ DNS configured"
 
       - name: Start Cloudflare Tunnel
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
-          export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          export HTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          export HTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-
           echo "Starting Cloudflare Tunnel..."
           cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
           sleep 10
@@ -286,34 +297,38 @@ jobs:
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
           echo "🌐 Access URL: https://${{ steps.config.outputs.hostname }}/vnc.html"
-          echo "🔑 Password: ${{ steps.config.outputs.vnc_password }}"
+          echo "🔑 Password: (configured)"
           echo ""
           
       - name: Run Moti on Desktop
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export DISPLAY=:1
+          export NO_AT_BRIDGE=1
+          export SESSION_MANAGER=""
+          
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c 'pip install moti && moti --data-url=\"${{ inputs.data_url }}\"; echo \"Moti completed. Press Enter to close...\"; read'" &
+            --command="bash -c 'pip install moti && moti --data-url=\"${{ inputs.data_url }}\"; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
+          
           sleep 5
-          echo "✅ Moti started in desktop terminal"
+          
+          # Verify terminal launched
+          if pgrep -f "xfce4-terminal" > /dev/null; then
+            echo "✅ Moti started in desktop terminal"
+          else
+            echo "⚠️ Terminal may not have started, but continuing..."
+          fi
 
       - name: Keep VNC Session Alive
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
-          export https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          export http_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          export HTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          export HTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473
-          echo -e 'https_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473\nhttp_proxy=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473\nHTTPS_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473\nHTTP_PROXY=http://tjijutki:4vg93ifc50gnx@23.27.196.104:6473' | sudo tee -a /etc/environment
-          export no_proxy=localhost,127.0.0.1
           
           echo "Keeping VNC session alive..."
           
-          # Monitor for 6 hours
-          END_TIME=$((SECONDS + 300))
+          # Monitor for 6 hours (21600 seconds)
+          END_TIME=$((SECONDS + 21600))
           
           while [ $SECONDS -lt $END_TIME ]; do
             REMAINING=$((END_TIME - SECONDS))
@@ -347,7 +362,7 @@ jobs:
               echo "✅ Tunnel restarted successfully"
             fi
             
-            sleep 100
+            sleep 300
           done
           
           echo "✅ Session time expired"
@@ -361,9 +376,12 @@ jobs:
           vncserver -kill :1 || true
           pkill -x cloudflared || true
           
-          curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-            "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
-            --request DELETE \
-            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq '.'
+          # Delete the Cloudflare tunnel if tunnel_id exists
+          if [ -n "${{ steps.tunnel.outputs.tunnel_id }}" ] && [ "${{ steps.tunnel.outputs.tunnel_id }}" != "null" ]; then
+            curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
+              --request DELETE \
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null || true
+          fi
           
           echo "✅ Cleanup complete"
