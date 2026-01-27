@@ -309,7 +309,7 @@ jobs:
           
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c 'pip install moti && moti --data-url=\"${{ inputs.data_url }}\"; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
+            --command="bash -c 'export MOTI_JOB_DATA_URL="${{ inputs.data_url }}" && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
           
           sleep 5
           
@@ -327,8 +327,8 @@ jobs:
           
           echo "Keeping VNC session alive..."
           
-          # Monitor for 6 hours (21600 seconds)
-          END_TIME=$((SECONDS + 21600))
+          # Monitor for 30 mins (1800 seconds)
+          END_TIME=$((SECONDS + 1800))
           
           while [ $SECONDS -lt $END_TIME ]; do
             REMAINING=$((END_TIME - SECONDS))
@@ -362,7 +362,7 @@ jobs:
               echo "✅ Tunnel restarted successfully"
             fi
             
-            sleep 300
+            sleep 30
           done
           
           echo "✅ Session time expired"
