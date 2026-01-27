@@ -26,9 +26,6 @@ jobs:
         with:
           python-version: '3.x'
       
-      - name: Install Moti
-        run: pip install moti
-      
       - name: Fetch and Parse Config
         id: config
         run: |
