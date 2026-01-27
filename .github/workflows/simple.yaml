@@ -288,14 +288,14 @@ jobs:
           echo "🌐 Access URL: https://${{ steps.config.outputs.hostname }}/vnc.html"
           echo "🔑 Password: ${{ steps.config.outputs.vnc_password }}"
           echo ""
-
+          
       - name: Run Moti on Desktop
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           export DISPLAY=:1
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c 'moti --data-url=\"${{ inputs.data_url }}\"; echo \"Moti completed. Press Enter to close...\"; read'" &
+            --command="bash -c 'pip install moti && moti --data-url=\"${{ inputs.data_url }}\"; echo \"Moti completed. Press Enter to close...\"; read'" &
           sleep 5
           echo "✅ Moti started in desktop terminal"
 
