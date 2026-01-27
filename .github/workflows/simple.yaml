@@ -82,6 +82,14 @@ jobs:
             xubuntu-wallpapers \
             gnome-icon-theme
 
+      - name: Install Chromium Browser
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Installing Chromium browser..."
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+          chromium-browser --version
+          
       - name: Install TurboVNC Server
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
