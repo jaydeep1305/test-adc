@@ -306,19 +306,33 @@ jobs:
           echo "Creating DNS record..."
           
           FULL_HOSTNAME="${{ steps.config.outputs.hostname }}"
+          echo "Hostname: $FULL_HOSTNAME"
+          echo "Tunnel ID: ${{ steps.tunnel.outputs.tunnel_id }}"
+          echo "Target: ${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com"
           
-          EXISTING=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+          # Check for existing DNS record
+          EXISTING_RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
             "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
-            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq -r '.result[0].id // empty')
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}")
+          
+          echo "Existing DNS check response:"
+          echo "$EXISTING_RESPONSE" | jq '.'
+          
+          EXISTING=$(echo "$EXISTING_RESPONSE" | jq -r '.result[0].id // empty')
           
           if [ -n "$EXISTING" ]; then
-            echo "⚠️ DNS record already exists, deleting..."
-            curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            echo "⚠️ DNS record already exists (ID: $EXISTING), deleting..."
+            DELETE_RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
               "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING}" \
               --request DELETE \
-              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" > /dev/null
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}")
+            echo "Delete response:"
+            echo "$DELETE_RESPONSE" | jq '.'
+            sleep 2
           fi
           
+          # Create new DNS record
+          echo "Creating new DNS record..."
           RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
             "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records" \
             --request POST \
@@ -331,14 +345,19 @@ jobs:
               \"content\": \"${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com\"
             }")
           
+          echo "Create DNS response:"
+          echo "$RESPONSE" | jq '.'
+          
           SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
           if [ "$SUCCESS" != "true" ]; then
             echo "❌ Failed to create DNS record"
-            echo "$RESPONSE" | jq '.'
+            echo "Error details:"
+            echo "$RESPONSE" | jq '.errors'
             exit 1
           fi
           
-          echo "✅ DNS configured"
+          DNS_RECORD_ID=$(echo "$RESPONSE" | jq -r '.result.id')
+          echo "✅ DNS record created successfully (ID: $DNS_RECORD_ID)"
 
       - name: Start Cloudflare Tunnel
         if: steps.config.outputs.cloudflare_enabled == 'true'
@@ -374,12 +393,9 @@ jobs:
           export NO_AT_BRIDGE=1
           export SESSION_MANAGER=""
           
-          # Decode and pass config to Moti
-          CONFIG_JSON=$(echo "${{ inputs.base64_config }}" | base64 -d)
-          
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c 'export MOTI_JOB_CONFIG=\"\$CONFIG_JSON\" && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
+            --command="bash -c 'export MOTI_JOB_CONFIG=\$(echo \"${{ inputs.base64_config }}\" | base64 -d) && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
           
           sleep 5
           
