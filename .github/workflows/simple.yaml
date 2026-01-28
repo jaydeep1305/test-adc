@@ -275,7 +275,7 @@ jobs:
                   },
                   {
                     \"hostname\": \"${{ steps.config.outputs.hostname }}\",
-                    \"path\": \"/service/*\",
+                    \"path\": \"/browser-agent-management-service/*\",
                     \"service\": \"http://localhost:8801\",
                     \"originRequest\": {}
                   },
@@ -392,10 +392,13 @@ jobs:
           export DISPLAY=:1
           export NO_AT_BRIDGE=1
           export SESSION_MANAGER=""
+          sudo apt-get update
+          sudo apt-get install ffmpeg libavcodec-dev libavformat-dev libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev pkg-config
           
+
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c 'export MOTI_JOB_CONFIG=\$(echo \"${{ inputs.base64_config }}\" | base64 -d) && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
+            --command="bash -c 'export MOTI_JOB_CONFIG=\$(echo \"${{ inputs.base64_config }}\" | base64 -d) && pip install av --upgrade && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
           
           sleep 5
           
