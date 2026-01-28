@@ -2,8 +2,8 @@ name: Process Data
 on:
   workflow_dispatch:
     inputs:
-      data_url:
-        description: 'URL to fetch data from'
+      base64_config:
+        description: 'Base64 encoded JSON configuration'
         required: true
         type: string
 
@@ -29,15 +29,16 @@ jobs:
       - name: Fetch and Parse Config
         id: config
         run: |
-          # Fetch config from URL
-          CONFIG=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" "${{ inputs.data_url }}")
-          echo "$CONFIG"
+          # Decode base64 config (without echoing it)
+          CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
           
-          # Parse VNC and Cloudflare values (lowercase keys)
+          # Parse VNC, Cloudflare, and Webshare values (lowercase keys)
           VNC_ENABLED=$(echo "$CONFIG" | jq -r '.vnc_enabled // "false"')
           CLOUDFLARE_ENABLED=$(echo "$CONFIG" | jq -r '.cloudflare_enabled // "false"')
+          WEBSHARE_ENABLED=$(echo "$CONFIG" | jq -r '.webshare_enabled // "false"')
           echo "vnc_enabled=$VNC_ENABLED" >> $GITHUB_OUTPUT
           echo "cloudflare_enabled=$CLOUDFLARE_ENABLED" >> $GITHUB_OUTPUT
+          echo "webshare_enabled=$WEBSHARE_ENABLED" >> $GITHUB_OUTPUT
           
           # Parse VNC password if VNC is enabled
           if [ "$VNC_ENABLED" = "true" ]; then
@@ -57,15 +58,51 @@ jobs:
             echo "cloudflare_zone_id=$CLOUDFLARE_ZONE_ID" >> $GITHUB_OUTPUT
             echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
             
-            echo "✅ Cloudflare Config Loaded:"
-            echo "  Cloudflare: $CLOUDFLARE_ENABLED"
+            echo "✅ Cloudflare Config Loaded"
             echo "  Hostname: $HOSTNAME"
-            echo "  Account ID: ${CLOUDFLARE_ACCOUNT_ID:0:8}..."
+          fi
+          
+          # Parse Webshare-related values if Webshare is enabled
+          if [ "$WEBSHARE_ENABLED" = "true" ]; then
+            WEBSHARE_API_TOKEN=$(echo "$CONFIG" | jq -r '.webshare_api_token // ""')
+            echo "webshare_api_token=$WEBSHARE_API_TOKEN" >> $GITHUB_OUTPUT
+            
+            echo "✅ Webshare Config Loaded"
           fi
           
           echo "✅ Config Loaded:"
           echo "  VNC: $VNC_ENABLED"
           echo "  Cloudflare: $CLOUDFLARE_ENABLED"
+          echo "  Webshare: $WEBSHARE_ENABLED"
+      
+      - name: Register IP with Webshare
+        if: steps.config.outputs.webshare_enabled == 'true'
+        id: webshare
+        run: |
+          echo "Registering IP with Webshare..."
+          
+          # Get current public IP
+          PUBLIC_IP=$(curl -s 'https://api.ipify.org?format=json' | jq -r '.ip')
+          echo "Public IP: $PUBLIC_IP"
+          
+          # Register IP with Webshare
+          RESPONSE=$(curl -s "https://proxy.webshare.io/api/v2/proxy/ipauthorization/" \
+            -X POST \
+            -d "{\"ip_address\": \"$PUBLIC_IP\"}" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Token ${{ steps.config.outputs.webshare_api_token }}")
+          
+          # Extract authorization ID
+          AUTH_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+          
+          if [ -n "$AUTH_ID" ]; then
+            echo "webshare_auth_id=$AUTH_ID" >> $GITHUB_OUTPUT
+            echo "✅ IP registered with Webshare (Auth ID: $AUTH_ID)"
+          else
+            echo "⚠️ Failed to register IP with Webshare"
+            echo "$RESPONSE" | jq '.'
+          fi
+          echo "  Webshare: $WEBSHARE_ENABLED"
       
       - name: Install Desktop Environment
         if: steps.config.outputs.vnc_enabled == 'true'
@@ -232,6 +269,18 @@ jobs:
                 \"ingress\": [
                   {
                     \"hostname\": \"${{ steps.config.outputs.hostname }}\",
+                    \"path\": \"/vnc/*\",
+                    \"service\": \"http://localhost:${NOVNC_PORT}\",
+                    \"originRequest\": {}
+                  },
+                  {
+                    \"hostname\": \"${{ steps.config.outputs.hostname }}\",
+                    \"path\": \"/service/*\",
+                    \"service\": \"http://localhost:8080\",
+                    \"originRequest\": {}
+                  },
+                  {
+                    \"hostname\": \"${{ steps.config.outputs.hostname }}\",
                     \"service\": \"http://localhost:${NOVNC_PORT}\",
                     \"originRequest\": {}
                   },
@@ -325,9 +374,12 @@ jobs:
           export NO_AT_BRIDGE=1
           export SESSION_MANAGER=""
           
+          # Decode and pass config to Moti
+          CONFIG_JSON=$(echo "${{ inputs.base64_config }}" | base64 -d)
+          
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c 'export MOTI_JOB_DATA_URL="${{ inputs.data_url }}" && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
+            --command="bash -c 'export MOTI_JOB_CONFIG=\"\$CONFIG_JSON\" && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
           
           sleep 5
           
@@ -337,6 +389,18 @@ jobs:
           else
             echo "⚠️ Terminal may not have started, but continuing..."
           fi
+
+      - name: Run Moti in Normal Terminal
+        if: steps.config.outputs.vnc_enabled == 'false'
+        run: |
+          echo "Running Moti in normal terminal (no VNC)..."
+          
+          # Decode and export config
+          export MOTI_JOB_CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
+          
+          pip install moti
+          moti
+          echo "✅ Moti completed"
 
       - name: Keep VNC Session Alive
         if: steps.config.outputs.vnc_enabled == 'true'
@@ -390,6 +454,29 @@ jobs:
           done
           
           echo "✅ Session time expired"
+
+      - name: Cleanup Webshare IP Authorization
+        if: always() && steps.config.outputs.webshare_enabled == 'true'
+        run: |
+          echo "Deregistering IP from Webshare..."
+          
+          if [ -n "${{ steps.webshare.outputs.webshare_auth_id }}" ] && [ "${{ steps.webshare.outputs.webshare_auth_id }}" != "null" ]; then
+            DELETE_RESPONSE=$(curl -s "https://proxy.webshare.io/api/v2/proxy/ipauthorization/${{ steps.webshare.outputs.webshare_auth_id }}/" \
+              -X DELETE \
+              -H "Authorization: Token ${{ steps.config.outputs.webshare_api_token }}")
+            
+            # Check if deletion was successful (empty response or 204 status)
+            if [ -z "$DELETE_RESPONSE" ] || [ "$DELETE_RESPONSE" = "{}" ]; then
+              echo "✅ IP authorization removed from Webshare"
+            else
+              echo "⚠️ Failed to remove IP authorization"
+              echo "$DELETE_RESPONSE"
+            fi
+          else
+            echo "⚠️ No Webshare authorization ID found to delete"
+          fi
+          
+          echo "✅ Webshare cleanup complete"
 
       - name: Cleanup Cloudflare Tunnel and DNS
         if: always() && steps.config.outputs.cloudflare_enabled == 'true'
