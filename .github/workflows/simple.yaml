@@ -276,7 +276,7 @@ jobs:
                   {
                     \"hostname\": \"${{ steps.config.outputs.hostname }}\",
                     \"path\": \"/service/*\",
-                    \"service\": \"http://localhost:8080\",
+                    \"service\": \"http://localhost:8801\",
                     \"originRequest\": {}
                   },
                   {
