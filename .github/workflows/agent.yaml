@@ -1,0 +1,347 @@
+name: Process Data
+on:
+  workflow_dispatch:
+    inputs:
+      base64_config:
+        description: 'Base64 encoded JSON configuration'
+        required: true
+        type: string
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Fetch and Parse Config
+        id: config
+        run: |
+          # Decode base64 config (without echoing it)
+          CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
+          
+          # Parse Cloudflare and Webshare values (lowercase keys)
+          CLOUDFLARE_ENABLED=$(echo "$CONFIG" | jq -r '.cloudflare_enabled // "false"')
+          WEBSHARE_ENABLED=$(echo "$CONFIG" | jq -r '.webshare_enabled // "false"')
+          echo "cloudflare_enabled=$CLOUDFLARE_ENABLED" >> $GITHUB_OUTPUT
+          echo "webshare_enabled=$WEBSHARE_ENABLED" >> $GITHUB_OUTPUT
+          
+          # Parse Cloudflare-related values if Cloudflare is enabled
+          if [ "$CLOUDFLARE_ENABLED" = "true" ]; then
+            CLOUDFLARE_API_TOKEN=$(echo "$CONFIG" | jq -r '.cloudflare_api_token // ""')
+            CLOUDFLARE_ACCOUNT_ID=$(echo "$CONFIG" | jq -r '.cloudflare_account_id // ""')
+            CLOUDFLARE_ZONE_ID=$(echo "$CONFIG" | jq -r '.cloudflare_zone_id // ""')
+            HOSTNAME=$(echo "$CONFIG" | jq -r '.hostname // ""')
+            
+            echo "cloudflare_api_token=$CLOUDFLARE_API_TOKEN" >> $GITHUB_OUTPUT
+            echo "cloudflare_account_id=$CLOUDFLARE_ACCOUNT_ID" >> $GITHUB_OUTPUT
+            echo "cloudflare_zone_id=$CLOUDFLARE_ZONE_ID" >> $GITHUB_OUTPUT
+            echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
+            
+            echo "✅ Cloudflare Config Loaded"
+            echo "  Hostname: $HOSTNAME"
+          fi
+          
+          # Parse Webshare-related values if Webshare is enabled
+          if [ "$WEBSHARE_ENABLED" = "true" ]; then
+            WEBSHARE_API_TOKEN=$(echo "$CONFIG" | jq -r '.webshare_api_token // ""')
+            echo "webshare_api_token=$WEBSHARE_API_TOKEN" >> $GITHUB_OUTPUT
+            
+            echo "✅ Webshare Config Loaded"
+          fi
+          
+          echo "✅ Config Loaded:"
+          echo "  Cloudflare: $CLOUDFLARE_ENABLED"
+          echo "  Webshare: $WEBSHARE_ENABLED"
+      
+      - name: Register IP with Webshare
+        if: steps.config.outputs.webshare_enabled == 'true'
+        id: webshare
+        run: |
+          echo "Registering IP with Webshare..."
+          
+          # Get current public IP
+          PUBLIC_IP=$(curl -s 'https://api.ipify.org?format=json' | jq -r '.ip')
+          echo "Public IP: $PUBLIC_IP"
+          
+          # Register IP with Webshare
+          RESPONSE=$(curl -s "https://proxy.webshare.io/api/v2/proxy/ipauthorization/" \
+            -X POST \
+            -d "{\"ip_address\": \"$PUBLIC_IP\"}" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Token ${{ steps.config.outputs.webshare_api_token }}")
+          
+          # Extract authorization ID
+          AUTH_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
+          
+          if [ -n "$AUTH_ID" ]; then
+            echo "webshare_auth_id=$AUTH_ID" >> $GITHUB_OUTPUT
+            echo "✅ IP registered with Webshare (Auth ID: $AUTH_ID)"
+          else
+            echo "⚠️ Failed to register IP with Webshare"
+            echo "$RESPONSE" | jq '.'
+          fi
+
+      - name: Install cloudflared
+        if: steps.config.outputs.cloudflare_enabled == 'true'
+        run: |
+          echo "Installing cloudflared..."
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          cloudflared --version
+
+      - name: Create Cloudflare Tunnel
+        if: steps.config.outputs.cloudflare_enabled == 'true'
+        id: tunnel
+        run: |
+          echo "Creating Cloudflare Tunnel..."
+          
+          RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel" \
+            --request POST \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "name": "github-moti-'$(date +%s)'",
+              "config_src": "cloudflare"
+            }')
+          
+          # Check if tunnel creation was successful
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to create tunnel"
+            echo "$RESPONSE" | jq '.'
+            exit 1
+          fi
+          
+          TUNNEL_ID=$(echo "$RESPONSE" | jq -r '.result.id')
+          TUNNEL_TOKEN=$(echo "$RESPONSE" | jq -r '.result.token')
+          
+          if [ -z "$TUNNEL_ID" ] || [ "$TUNNEL_ID" = "null" ]; then
+            echo "❌ Failed to extract tunnel ID"
+            exit 1
+          fi
+          
+          echo "tunnel_id=$TUNNEL_ID" >> $GITHUB_OUTPUT
+          echo "tunnel_token=$TUNNEL_TOKEN" >> $GITHUB_OUTPUT
+          echo "✅ Tunnel created: $TUNNEL_ID"
+
+      - name: Configure Tunnel
+        if: steps.config.outputs.cloudflare_enabled == 'true'
+        run: |
+          echo "Configuring tunnel..."
+          
+          RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}/configurations" \
+            --request PUT \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"config\": {
+                \"ingress\": [
+                  {
+                    \"hostname\": \"${{ steps.config.outputs.hostname }}\",
+                    \"service\": \"http://localhost:8801\",
+                    \"originRequest\": {}
+                  },
+                  {
+                    \"service\": \"http_status:404\"
+                  }
+                ]
+              }
+            }")
+          
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to configure tunnel"
+            echo "$RESPONSE" | jq '.'
+            exit 1
+          fi
+          
+          echo "✅ Tunnel configured"
+
+      - name: Create DNS Record
+        if: steps.config.outputs.cloudflare_enabled == 'true'
+        run: |
+          echo "Creating DNS record..."
+          
+          FULL_HOSTNAME="${{ steps.config.outputs.hostname }}"
+          echo "Hostname: $FULL_HOSTNAME"
+          echo "Tunnel ID: ${{ steps.tunnel.outputs.tunnel_id }}"
+          echo "Target: ${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com"
+          
+          # Check for existing DNS record
+          EXISTING_RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}")
+          
+          echo "Existing DNS check response:"
+          echo "$EXISTING_RESPONSE" | jq '.'
+          
+          EXISTING=$(echo "$EXISTING_RESPONSE" | jq -r '.result[0].id // empty')
+          
+          if [ -n "$EXISTING" ]; then
+            echo "⚠️ DNS record already exists (ID: $EXISTING), deleting..."
+            DELETE_RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING}" \
+              --request DELETE \
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}")
+            echo "Delete response:"
+            echo "$DELETE_RESPONSE" | jq '.'
+            sleep 2
+          fi
+          
+          # Create new DNS record
+          echo "Creating new DNS record..."
+          RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records" \
+            --request POST \
+            --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"type\": \"CNAME\",
+              \"proxied\": true,
+              \"name\": \"${FULL_HOSTNAME}\",
+              \"content\": \"${{ steps.tunnel.outputs.tunnel_id }}.cfargotunnel.com\"
+            }")
+          
+          echo "Create DNS response:"
+          echo "$RESPONSE" | jq '.'
+          
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "❌ Failed to create DNS record"
+            echo "Error details:"
+            echo "$RESPONSE" | jq '.errors'
+            exit 1
+          fi
+          
+          DNS_RECORD_ID=$(echo "$RESPONSE" | jq -r '.result.id')
+          echo "✅ DNS record created successfully (ID: $DNS_RECORD_ID)"
+
+      - name: Start Cloudflare Tunnel
+        if: steps.config.outputs.cloudflare_enabled == 'true'
+        run: |
+          echo "Starting Cloudflare Tunnel..."
+          cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+          sleep 10
+          
+          if ! pgrep -x "cloudflared" > /dev/null; then
+            echo "❌ Cloudflare tunnel failed to start"
+            cat /tmp/tunnel.log
+            exit 1
+          fi
+          
+          echo "✅ Cloudflare Tunnel started"
+
+      - name: Display Connection Info
+        if: steps.config.outputs.cloudflare_enabled == 'true'
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          🎉 MOTI SERVICE IS NOW RUNNING! 🎉                  ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "🌐 Access URL: https://${{ steps.config.outputs.hostname }}"
+          echo ""
+          
+      - name: Run Moti
+        run: |
+          echo "Running Moti..."
+          
+          # Decode and export config
+          export MOTI_JOB_CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
+          
+          # Install dependencies
+          pip install moti
+          
+          # Run Moti
+          moti
+          
+          echo "✅ Moti completed"
+
+      - name: Cleanup Webshare IP Authorization
+        if: always() && steps.config.outputs.webshare_enabled == 'true'
+        run: |
+          echo "Deregistering IP from Webshare..."
+          
+          if [ -n "${{ steps.webshare.outputs.webshare_auth_id }}" ] && [ "${{ steps.webshare.outputs.webshare_auth_id }}" != "null" ]; then
+            DELETE_RESPONSE=$(curl -s "https://proxy.webshare.io/api/v2/proxy/ipauthorization/${{ steps.webshare.outputs.webshare_auth_id }}/" \
+              -X DELETE \
+              -H "Authorization: Token ${{ steps.config.outputs.webshare_api_token }}")
+            
+            # Check if deletion was successful (empty response or 204 status)
+            if [ -z "$DELETE_RESPONSE" ] || [ "$DELETE_RESPONSE" = "{}" ]; then
+              echo "✅ IP authorization removed from Webshare"
+            else
+              echo "⚠️ Failed to remove IP authorization"
+              echo "$DELETE_RESPONSE"
+            fi
+          else
+            echo "⚠️ No Webshare authorization ID found to delete"
+          fi
+          
+          echo "✅ Webshare cleanup complete"
+
+      - name: Cleanup Cloudflare Tunnel and DNS
+        if: always() && steps.config.outputs.cloudflare_enabled == 'true'
+        run: |
+          echo "Cleaning up Cloudflare tunnel and DNS record..."
+          
+          # Stop cloudflared process
+          pkill -x cloudflared || true
+          sleep 2
+          
+          # Delete DNS record
+          FULL_HOSTNAME="${{ steps.config.outputs.hostname }}"
+          if [ -n "$FULL_HOSTNAME" ] && [ "$FULL_HOSTNAME" != "null" ]; then
+            echo "Deleting DNS record for ${FULL_HOSTNAME}..."
+            EXISTING_DNS=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records?name=${FULL_HOSTNAME}" \
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}" | jq -r '.result[0].id // empty')
+            
+            if [ -n "$EXISTING_DNS" ]; then
+              DELETE_RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+                "https://api.cloudflare.com/client/v4/zones/${{ steps.config.outputs.cloudflare_zone_id }}/dns_records/${EXISTING_DNS}" \
+                --request DELETE \
+                --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}")
+              
+              DELETE_SUCCESS=$(echo "$DELETE_RESPONSE" | jq -r '.success // false')
+              if [ "$DELETE_SUCCESS" = "true" ]; then
+                echo "✅ DNS record deleted successfully"
+              else
+                echo "⚠️ Failed to delete DNS record"
+                echo "$DELETE_RESPONSE" | jq '.'
+              fi
+            else
+              echo "⚠️ DNS record not found"
+            fi
+          fi
+          
+          # Delete Cloudflare tunnel
+          if [ -n "${{ steps.tunnel.outputs.tunnel_id }}" ] && [ "${{ steps.tunnel.outputs.tunnel_id }}" != "null" ]; then
+            echo "Deleting Cloudflare tunnel ${{ steps.tunnel.outputs.tunnel_id }}..."
+            TUNNEL_DELETE_RESPONSE=$(curl -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              "https://api.cloudflare.com/client/v4/accounts/${{ steps.config.outputs.cloudflare_account_id }}/cfd_tunnel/${{ steps.tunnel.outputs.tunnel_id }}" \
+              --request DELETE \
+              --header "Authorization: Bearer ${{ steps.config.outputs.cloudflare_api_token }}")
+            
+            TUNNEL_DELETE_SUCCESS=$(echo "$TUNNEL_DELETE_RESPONSE" | jq -r '.success // false')
+            if [ "$TUNNEL_DELETE_SUCCESS" = "true" ]; then
+              echo "✅ Cloudflare tunnel deleted successfully"
+            else
+              echo "⚠️ Failed to delete Cloudflare tunnel"
+              echo "$TUNNEL_DELETE_RESPONSE" | jq '.'
+            fi
+          else
+            echo "⚠️ Tunnel ID not found"
+          fi
+          
+          echo "✅ Cloudflare cleanup complete"
