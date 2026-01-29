@@ -32,13 +32,17 @@ jobs:
           # Decode base64 config (without echoing it)
           CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
           
-          # Parse VNC, Cloudflare, and Webshare values (lowercase keys)
+          # Parse VNC, Cloudflare, Webshare, and Keep Alive values (lowercase keys)
           VNC_ENABLED=$(echo "$CONFIG" | jq -r '.vnc_enabled // "false"')
           CLOUDFLARE_ENABLED=$(echo "$CONFIG" | jq -r '.cloudflare_enabled // "false"')
           WEBSHARE_ENABLED=$(echo "$CONFIG" | jq -r '.webshare_enabled // "false"')
+          KEEP_ALIVE_ENABLED=$(echo "$CONFIG" | jq -r '.keep_alive_enabled // "false"')
+          KEEP_ALIVE_MINUTES=$(echo "$CONFIG" | jq -r '.keep_alive_minutes // "30"')
           echo "vnc_enabled=$VNC_ENABLED" >> $GITHUB_OUTPUT
           echo "cloudflare_enabled=$CLOUDFLARE_ENABLED" >> $GITHUB_OUTPUT
           echo "webshare_enabled=$WEBSHARE_ENABLED" >> $GITHUB_OUTPUT
+          echo "keep_alive_enabled=$KEEP_ALIVE_ENABLED" >> $GITHUB_OUTPUT
+          echo "keep_alive_minutes=$KEEP_ALIVE_MINUTES" >> $GITHUB_OUTPUT
           
           # Parse VNC password if VNC is enabled
           if [ "$VNC_ENABLED" = "true" ]; then
@@ -74,6 +78,8 @@ jobs:
           echo "  VNC: $VNC_ENABLED"
           echo "  Cloudflare: $CLOUDFLARE_ENABLED"
           echo "  Webshare: $WEBSHARE_ENABLED"
+          echo "  Keep Alive: $KEEP_ALIVE_ENABLED"
+          echo "  Keep Alive Minutes: $KEEP_ALIVE_MINUTES"
       
       - name: Register IP with Webshare
         if: steps.config.outputs.webshare_enabled == 'true'
@@ -102,7 +108,6 @@ jobs:
             echo "⚠️ Failed to register IP with Webshare"
             echo "$RESPONSE" | jq '.'
           fi
-          echo "  Webshare: $WEBSHARE_ENABLED"
       
       - name: Install Desktop Environment
         if: steps.config.outputs.vnc_enabled == 'true'
@@ -422,14 +427,15 @@ jobs:
           echo "✅ Moti completed"
 
       - name: Keep VNC Session Alive
-        if: steps.config.outputs.vnc_enabled == 'true'
+        if: steps.config.outputs.vnc_enabled == 'true' && steps.config.outputs.keep_alive_enabled == 'true'
         run: |
           export PATH=$PATH:/opt/TurboVNC/bin
           
-          echo "Keeping VNC session alive..."
+          echo "Keeping VNC session alive for ${{ steps.config.outputs.keep_alive_minutes }} minutes..."
           
-          # Monitor for 30 mins (1800 seconds)
-          END_TIME=$((SECONDS + 1800))
+          # Calculate total seconds from minutes
+          TOTAL_SECONDS=$(($${{ steps.config.outputs.keep_alive_minutes }} * 60))
+          END_TIME=$((SECONDS + TOTAL_SECONDS))
           
           while [ $SECONDS -lt $END_TIME ]; do
             REMAINING=$((END_TIME - SECONDS))
@@ -453,6 +459,42 @@ jobs:
               fi
               echo "✅ VNC restarted successfully"
             fi
+            
+            # Check and restart tunnel if Cloudflare is enabled
+            if [ "${{ steps.config.outputs.cloudflare_enabled }}" = "true" ]; then
+              if ! pgrep -x "cloudflared" > /dev/null; then
+                echo "❌ Tunnel stopped! Restarting..."
+                cloudflared tunnel run --token ${{ steps.tunnel.outputs.tunnel_token }} > /tmp/tunnel.log 2>&1 &
+                sleep 5
+                if ! pgrep -x "cloudflared" > /dev/null; then
+                  echo "❌ Failed to restart tunnel! Exiting..."
+                  cat /tmp/tunnel.log
+                  exit 1
+                fi
+                echo "✅ Tunnel restarted successfully"
+              fi
+            fi
+            
+            sleep 30
+          done
+          
+          echo "✅ Session time expired"
+
+      - name: Keep Session Alive (No VNC)
+        if: steps.config.outputs.vnc_enabled == 'false' && steps.config.outputs.keep_alive_enabled == 'true'
+        run: |
+          echo "Keeping session alive for ${{ steps.config.outputs.keep_alive_minutes }} minutes (no VNC mode)..."
+          
+          # Calculate total seconds from minutes
+          TOTAL_SECONDS=$(($${{ steps.config.outputs.keep_alive_minutes }} * 60))
+          END_TIME=$((SECONDS + TOTAL_SECONDS))
+          
+          while [ $SECONDS -lt $END_TIME ]; do
+            REMAINING=$((END_TIME - SECONDS))
+            HOURS=$((REMAINING / 3600))
+            MINUTES=$(((REMAINING % 3600) / 60))
+            
+            echo "⏱️ Remaining: ${HOURS}h ${MINUTES}m | Session active"
             
             # Check and restart tunnel if Cloudflare is enabled
             if [ "${{ steps.config.outputs.cloudflare_enabled }}" = "true" ]; then
