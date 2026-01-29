@@ -1,4 +1,4 @@
-name: VNC Data
+name: VNC Data Static Timeout
 on:
   workflow_dispatch:
     inputs:
@@ -128,6 +128,14 @@ jobs:
             xubuntu-icon-theme \
             xubuntu-wallpapers \
             gnome-icon-theme
+
+      - name: Install Chromium Browser
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          echo "Installing Chromium browser..."
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+          chromium-browser --version
           
       - name: Install TurboVNC Server
         if: steps.config.outputs.vnc_enabled == 'true'
@@ -385,29 +393,12 @@ jobs:
           export NO_AT_BRIDGE=1
           export SESSION_MANAGER=""
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libavcodec-dev libavformat-dev libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev pkg-config
+          sudo apt-get install ffmpeg libavcodec-dev libavformat-dev libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev pkg-config
           
 
           # Run Moti in a visible terminal on the desktop
           xfce4-terminal --maximize --title="Moti Process" \
-            --command="bash -c '
-              # Decode base64 config
-              CONFIG=\$(echo \"${{ inputs.base64_config }}\" | base64 -d)
-              
-              # Export all config keys as uppercase environment variables
-              while IFS=\"=\" read -r key value; do
-                # Convert key to uppercase and export
-                UPPER_KEY=\$(echo \"\$key\" | tr \"[:lower:]\" \"[:upper:]\")
-                export \"\$UPPER_KEY=\$value\"
-                echo \"Exported: \$UPPER_KEY\"
-              done < <(echo \"\$CONFIG\" | jq -r \"to_entries|map(\\\"\(.key)=\(.value|tostring)\\\")|.[]\")
-              
-              # Install and run moti
-              pip install av --upgrade && pip install moti && moti
-              
-              echo \"Moti completed. Press Enter to close...\"
-              read
-            '" 2>/dev/null &
+            --command="bash -c 'export MOTI_JOB_CONFIG=\$(echo \"${{ inputs.base64_config }}\" | base64 -d) && pip install av --upgrade && pip install moti && moti; echo \"Moti completed. Press Enter to close...\"; read'" 2>/dev/null &
           
           sleep 5
           
@@ -423,18 +414,9 @@ jobs:
         run: |
           echo "Running Moti in normal terminal (no VNC)..."
           
-          # Decode base64 config
-          CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
+          # Decode and export config
+          export MOTI_JOB_CONFIG=$(echo "${{ inputs.base64_config }}" | base64 -d)
           
-          # Export all config keys as uppercase environment variables
-          while IFS="=" read -r key value; do
-            # Convert key to uppercase and export
-            UPPER_KEY=$(echo "$key" | tr "[:lower:]" "[:upper:]")
-            export "$UPPER_KEY=$value"
-            echo "Exported: $UPPER_KEY"
-          done < <(echo "$CONFIG" | jq -r 'to_entries|map("\(.key)=\(.value|tostring)")|.[]')
-          
-          # Install and run moti
           pip install moti
           moti
           echo "✅ Moti completed"
