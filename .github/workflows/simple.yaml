@@ -129,14 +129,6 @@ jobs:
             xubuntu-wallpapers \
             gnome-icon-theme
 
-      - name: Install Chromium Browser
-        if: steps.config.outputs.vnc_enabled == 'true'
-        run: |
-          echo "Installing Chromium browser..."
-          sudo apt-get update
-          sudo apt-get install -y chromium-browser chromium-chromedriver
-          chromium-browser --version
-          
       - name: Install TurboVNC Server
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
@@ -251,7 +243,6 @@ jobs:
           fi
           
           echo "tunnel_id=$TUNNEL_ID" >> $GITHUB_OUTPUT
-          echo "tunnel_token=$TUNNEL_TOKEN" >> $GITHUB_OUTPUT
           echo "✅ Tunnel created: $TUNNEL_ID"
 
       - name: Configure Tunnel
@@ -411,6 +402,7 @@ jobs:
 
       - name: Run Moti in Normal Terminal
         if: steps.config.outputs.vnc_enabled == 'false'
+        timeout-minutes: 30
         run: |
           echo "Running Moti in normal terminal (no VNC)..."
           
