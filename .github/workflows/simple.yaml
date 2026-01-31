@@ -243,6 +243,7 @@ jobs:
           fi
           
           echo "tunnel_id=$TUNNEL_ID" >> $GITHUB_OUTPUT
+          echo "tunnel_token=$TUNNEL_TOKEN" >> $GITHUB_OUTPUT
           echo "✅ Tunnel created: $TUNNEL_ID"
 
       - name: Configure Tunnel
