@@ -431,7 +431,7 @@ jobs:
           echo "Keeping VNC session alive..."
           
           # Monitor for 30 mins (1800 seconds)
-          END_TIME=$((SECONDS + 1800))
+          END_TIME=$((SECONDS + 3600))
           
           while [ $SECONDS -lt $END_TIME ]; do
             REMAINING=$((END_TIME - SECONDS))
