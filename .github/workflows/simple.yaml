@@ -119,17 +119,27 @@ jobs:
           sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list
           sudo sh -c 'echo "APT::Acquire::Queue-Mode \"host\"; APT::Acquire::Retries 3;" > /etc/apt/apt.conf.d/80parallel'
       
+      - name: Add Mozilla Firefox PPA
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          sudo add-apt-repository -y ppa:mozillateam/ppa
+          # Force PPA version over snap version
+          echo '
+          Package: firefox*
+          Pin: release o=LP-PPA-mozillateam
+          Pin-Priority: 1001
+          ' | sudo tee /etc/apt/preferences.d/mozilla-firefox
+      
       - name: Cache APT packages
         if: steps.config.outputs.vnc_enabled == 'true'
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: xfce4 xfce4-terminal firefox dbus-x11 x11-utils xfonts-base
-          version: 1.0
+          version: 2.0   # bump version to bust old stuck cache
       
       - name: Install Desktop Environment
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
-          echo "Installing XFCE desktop environment..."
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             xfce4 \
