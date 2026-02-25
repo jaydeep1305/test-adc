@@ -113,30 +113,31 @@ jobs:
             echo "$RESPONSE" | jq '.'
           fi
       
+      - name: Switch APT Mirror
+        if: steps.config.outputs.vnc_enabled == 'true'
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list
+          sudo sh -c 'echo "APT::Acquire::Queue-Mode \"host\"; APT::Acquire::Retries 3;" > /etc/apt/apt.conf.d/80parallel'
+      
+      - name: Cache APT packages
+        if: steps.config.outputs.vnc_enabled == 'true'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: xfce4 xfce4-terminal firefox dbus-x11 x11-utils xfonts-base
+          version: 1.0
+      
       - name: Install Desktop Environment
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
           echo "Installing XFCE desktop environment..."
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             xfce4 \
-            xfce4-goodies \
             xfce4-terminal \
             firefox \
             dbus-x11 \
-            dbus-user-session \
             x11-utils \
-            x11-apps \
-            x11-common \
-            x11-session-utils \
-            x11-xserver-utils \
-            xfonts-base \
-            xfonts-100dpi \
-            xfonts-75dpi \
-            xfonts-cyrillic \
-            xubuntu-icon-theme \
-            xubuntu-wallpapers \
-            gnome-icon-theme
+            xfonts-base
 
       - name: Install TurboVNC Server
         if: steps.config.outputs.vnc_enabled == 'true'
