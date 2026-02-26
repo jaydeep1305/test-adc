@@ -113,42 +113,30 @@ jobs:
             echo "$RESPONSE" | jq '.'
           fi
       
-      - name: Switch APT Mirror
-        if: steps.config.outputs.vnc_enabled == 'true'
-        run: |
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list
-          sudo sh -c 'echo "APT::Acquire::Queue-Mode \"host\"; APT::Acquire::Retries 3;" > /etc/apt/apt.conf.d/80parallel'
-      
-      - name: Add Mozilla Firefox PPA
-        if: steps.config.outputs.vnc_enabled == 'true'
-        run: |
-          sudo add-apt-repository -y ppa:mozillateam/ppa
-          # Force PPA version over snap version
-          echo '
-          Package: firefox*
-          Pin: release o=LP-PPA-mozillateam
-          Pin-Priority: 1001
-          ' | sudo tee /etc/apt/preferences.d/mozilla-firefox
-
       - name: Install Desktop Environment
         if: steps.config.outputs.vnc_enabled == 'true'
         run: |
-          # Switch to fast mirror
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://mirror.us.leaseweb.net/ubuntu|g' /etc/apt/sources.list
-      
-          # Force real Firefox deb, not snap
-          sudo add-apt-repository -y ppa:mozillateam/ppa
-          echo 'Package: firefox* Pin: release o=LP-PPA-mozillateam Pin-Priority: 1001' | \
-            sudo tee /etc/apt/preferences.d/mozilla-firefox
-      
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          echo "Installing XFCE desktop environment..."
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 \
+            xfce4-goodies \
             xfce4-terminal \
             firefox \
             dbus-x11 \
+            dbus-user-session \
             x11-utils \
-            xfonts-base
+            x11-apps \
+            x11-common \
+            x11-session-utils \
+            x11-xserver-utils \
+            xfonts-base \
+            xfonts-100dpi \
+            xfonts-75dpi \
+            xfonts-cyrillic \
+            xubuntu-icon-theme \
+            xubuntu-wallpapers \
+            gnome-icon-theme
 
       - name: Install TurboVNC Server
         if: steps.config.outputs.vnc_enabled == 'true'
